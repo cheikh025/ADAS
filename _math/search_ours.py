@@ -15,6 +15,7 @@ import copy
 import json
 import os
 import random
+import threading
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +26,14 @@ from dotenv import load_dotenv
 from json_repair import repair_json
 from tqdm import tqdm
 from typing import Union
+
+# ── Token tracking ────────────────────────────────────────────────────────────
+_search_input_tokens = 0
+_search_output_tokens = 0
+_exec_input_tokens = 0
+_exec_output_tokens = 0
+_total_questions_evaluated = 0
+_exec_token_lock = threading.Lock()
 
 load_dotenv(override=False)  # don't override already-set env vars
 
@@ -53,6 +62,7 @@ def make_client(base_url: str, api_key: str) -> openai.OpenAI:
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(msg, model, system_message, temperature=None):
+    global _exec_input_tokens, _exec_output_tokens
     extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
     response = client.chat.completions.create(
         model=model,
@@ -64,6 +74,10 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
     )
+    if response.usage:
+        with _exec_token_lock:
+            _exec_input_tokens += response.usage.prompt_tokens
+            _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = json.loads(content)
     assert json_dict is not None
@@ -72,6 +86,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
+    global _search_input_tokens, _search_output_tokens
     extra = {}
     response = client.chat.completions.create(
         model=model,
@@ -80,6 +95,9 @@ def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
     )
+    if response.usage:
+        _search_input_tokens += response.usage.prompt_tokens
+        _search_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = repair_json(content, return_objects=True)
     assert json_dict is not None
@@ -226,6 +244,46 @@ def search(args):
         with open(file_path, 'w') as f:
             json.dump(archive, f, indent=4)
 
+    log_token_usage(args.save_dir, args.expr_name)
+
+
+def log_token_usage(save_dir: str, expr_name: str):
+    """Log token usage summary to console and a JSON file."""
+    search_total = _search_input_tokens + _search_output_tokens
+    exec_total = _exec_input_tokens + _exec_output_tokens
+    avg_exec_per_question = (
+        exec_total / _total_questions_evaluated if _total_questions_evaluated > 0 else 0
+    )
+
+    print("\n" + "=" * 60)
+    print("TOKEN USAGE REPORT")
+    print("=" * 60)
+    print(f"Search tokens  — total: {search_total:,}  |  input: {_search_input_tokens:,}  |  output: {_search_output_tokens:,}")
+    print(f"Execution tokens — total: {exec_total:,}  |  input: {_exec_input_tokens:,}  |  output: {_exec_output_tokens:,}")
+    print(f"Avg execution tokens per question: {avg_exec_per_question:.1f}  (over {_total_questions_evaluated:,} questions)")
+    print("=" * 60 + "\n")
+
+    report = {
+        "search": {
+            "total_tokens": search_total,
+            "input_tokens": _search_input_tokens,
+            "output_tokens": _search_output_tokens,
+        },
+        "execution": {
+            "total_tokens": exec_total,
+            "input_tokens": _exec_input_tokens,
+            "output_tokens": _exec_output_tokens,
+        },
+        "avg_execution_tokens_per_question": round(avg_exec_per_question, 2),
+        "total_questions_evaluated": _total_questions_evaluated,
+    }
+
+    os.makedirs(save_dir, exist_ok=True)
+    report_path = os.path.join(save_dir, f"{expr_name}_token_usage.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=4)
+    print(f"Token usage report saved to: {report_path}")
+
 
 def evaluate(args):
     file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
@@ -282,6 +340,8 @@ def evaluate_forward_fn(args, forward_str):
     questions = [ex['problem'] for ex in examples]
     solutions = [ex['solution'] for ex in examples]
 
+    global _total_questions_evaluated
+    _total_questions_evaluated += len(examples)
     print(f"problem length: {len(examples)}")
     max_workers = min(len(examples), args.max_workers) if args.multiprocessing else 1
 
