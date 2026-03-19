@@ -19,14 +19,13 @@ from pathlib import Path
 import requests
 
 SUBJECTS = [
-    "Prealgebra",
     "Number Theory",
     "Precalculus",
     "Counting & Probability",
 ]
 LEVEL = "Level 5"
 SEED = 42
-N_PER_SUBJECT = 30
+N_PER_SUBJECT = 20
 
 OUTPUT_PATH = Path(__file__).parent / "math_4subjects.jsonl"
 CACHE_DIR = Path(__file__).parent / "_math_cache"
