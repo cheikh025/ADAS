@@ -15,6 +15,8 @@ import copy
 import json
 import os
 import random
+import re
+import threading
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from typing import Union
@@ -48,9 +50,76 @@ EVAL_TEMPERATURE = 1.0
 MAX_TOKENS = 32768
 PROVIDER_ROUTING = None
 
+# ── Token tracking ────────────────────────────────────────────────────────────
+_search_input_tokens = 0
+_search_output_tokens = 0
+_exec_input_tokens = 0
+_exec_output_tokens = 0
+_total_questions_evaluated = 0
+_exec_token_lock = threading.Lock()
+
 # MMLU-Pro: 10 answer options (A-J)
 LETTER_TO_INDEX = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4,
                    'F': 5, 'G': 6, 'H': 7, 'I': 8, 'J': 9}
+CHOICES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+
+
+_LETTERS = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
+
+
+def extract_answer(text) -> str:
+    """MMLU-Pro extraction cascade."""
+    # Unwrap Info objects
+    if not isinstance(text, str):
+        try:
+            text = text.content
+        except AttributeError:
+            return None
+
+    text = text.strip()
+
+    # Step 0: JSON parse — handle {"response": "I", ...} style outputs
+    try:
+        obj = json.loads(text)
+        for key in ("response", "answer", "Answer", "choice"):
+            val = str(obj.get(key, "")).strip().upper()
+            if len(val) == 1 and val in _LETTERS:
+                return val
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+
+    # Step 1: "answer is X"
+    match = re.search(r"answer is \(?([A-J])\)?", text)
+    if match:
+        return match.group(1)
+
+    # Step 2: "Answer: X" or "answer: X"
+    match = re.search(r'.*[aA]nswer:\s*([A-J])', text)
+    if match:
+        return match.group(1)
+
+    # Step 3: "Option X" / "option X"
+    match = re.search(r'[oO]ption\s+([A-J])\b', text)
+    if match:
+        return match.group(1)
+
+    # Step 4: last non-empty line is a bare letter
+    for line in reversed(text.splitlines()):
+        stripped = line.strip().strip('()."\'')
+        if len(stripped) == 1 and stripped.upper() in _LETTERS:
+            return stripped.upper()
+
+    # Step 5: \boxed{X}
+    match = re.search(r'\\boxed\{([A-J])\}', text)
+    if match:
+        return match.group(1)
+
+    # Step 6: last standalone A-J in text
+    match = re.search(r"\b[A-J]\b(?!.*\b[A-J]\b)", text, re.DOTALL)
+    if match:
+        return match.group(0)
+
+    return None
 
 
 def make_client(base_url: str, api_key: str) -> openai.OpenAI:
@@ -59,6 +128,7 @@ def make_client(base_url: str, api_key: str) -> openai.OpenAI:
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(msg, model, system_message, temperature=None):
+    global _exec_input_tokens, _exec_output_tokens
     extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
     response = client.chat.completions.create(
         model=model,
@@ -70,6 +140,10 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
     )
+    if response.usage:
+        with _exec_token_lock:
+            _exec_input_tokens  += response.usage.prompt_tokens
+            _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = json.loads(content)
     assert json_dict is not None
@@ -78,6 +152,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
+    global _search_input_tokens, _search_output_tokens
     extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
     response = client.chat.completions.create(
         model=model,
@@ -85,7 +160,11 @@ def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
         temperature=SEARCH_TEMPERATURE if temperature is None else temperature,
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
+        timeout=120,
     )
+    if response.usage:
+        _search_input_tokens  += response.usage.prompt_tokens
+        _search_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = repair_json(content, return_objects=True)
     assert json_dict is not None
@@ -192,6 +271,10 @@ def search(args):
             json.dump(archive, json_file, indent=4)
 
     for n in range(start, args.n_generation):
+        total_tokens = _search_input_tokens + _search_output_tokens + _exec_input_tokens + _exec_output_tokens
+        if args.total_token_budget is not None and total_tokens >= args.total_token_budget:
+            print(f"Token budget reached: {total_tokens:,} >= {args.total_token_budget:,} — stopping search.")
+            break
         print(f"============Generation {n + 1}=================")
         system_prompt, prompt = get_prompt(archive)
         msg_list = [
@@ -247,6 +330,46 @@ def search(args):
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, 'w') as json_file:
             json.dump(archive, json_file, indent=4)
+
+    log_token_usage(args.save_dir, args.expr_name)
+
+
+def log_token_usage(save_dir: str, expr_name: str):
+    """Log token usage summary to console and a JSON file."""
+    search_total = _search_input_tokens + _search_output_tokens
+    exec_total = _exec_input_tokens + _exec_output_tokens
+    avg_exec_per_question = (
+        exec_total / _total_questions_evaluated if _total_questions_evaluated > 0 else 0
+    )
+
+    print("\n" + "=" * 60)
+    print("TOKEN USAGE REPORT")
+    print("=" * 60)
+    print(f"Search tokens    — total: {search_total:,}  |  input: {_search_input_tokens:,}  |  output: {_search_output_tokens:,}")
+    print(f"Execution tokens — total: {exec_total:,}  |  input: {_exec_input_tokens:,}  |  output: {_exec_output_tokens:,}")
+    print(f"Avg execution tokens per question: {avg_exec_per_question:.1f}  (over {_total_questions_evaluated:,} questions)")
+    print("=" * 60 + "\n")
+
+    report = {
+        "search": {
+            "total_tokens": search_total,
+            "input_tokens": _search_input_tokens,
+            "output_tokens": _search_output_tokens,
+        },
+        "execution": {
+            "total_tokens": exec_total,
+            "input_tokens": _exec_input_tokens,
+            "output_tokens": _exec_output_tokens,
+        },
+        "avg_execution_tokens_per_question": round(avg_exec_per_question, 2),
+        "total_questions_evaluated": _total_questions_evaluated,
+    }
+
+    os.makedirs(save_dir, exist_ok=True)
+    report_path = os.path.join(save_dir, f"{expr_name}_token_usage.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=4)
+    print(f"Token usage report saved to: {report_path}")
 
 
 def evaluate(args):
@@ -306,6 +429,8 @@ def evaluate_forward_fn(args, forward_str):
     questions = [format_multichoice_question(example) for example in examples]
     answers = [LETTER_TO_INDEX[example['Answer']] for example in examples]
 
+    global _total_questions_evaluated
+    _total_questions_evaluated += len(examples)
     print(f"problem length: {len(examples)}")
     max_workers = min(len(examples), args.max_workers) if args.multiprocessing else 1
 
@@ -318,41 +443,21 @@ def evaluate_forward_fn(args, forward_str):
 
     for q_idx, res in enumerate(results):
         try:
-            if isinstance(res, str) and res in LETTER_TO_INDEX:
-                predicted_idx = LETTER_TO_INDEX[res]
+            # Unwrap Info objects or lists
+            if isinstance(res, list):
+                text = res[1].content if len(res) > 1 else res[0].content
             elif isinstance(res, str):
-                # Check for "(X)" patterns in string
-                matched = None
-                for letter in 'ABCDEFGHIJ':
-                    if f'{letter})' in res:
-                        matched = letter
-                        break
-                if matched:
-                    predicted_idx = LETTER_TO_INDEX[matched]
-                else:
-                    print(f"error in q {q_idx}: got {repr(res)}")
-                    acc_list.append(0)
-                    continue
-            elif isinstance(res, list):
-                try_res = res[1]
-                predicted_idx = LETTER_TO_INDEX[try_res.content]
-            elif res.content in LETTER_TO_INDEX:
-                predicted_idx = LETTER_TO_INDEX[res.content]
+                text = res
             else:
-                matched = None
-                for letter in 'ABCDEFGHIJ':
-                    if f'{letter})' in res.content:
-                        matched = letter
-                        break
-                if matched:
-                    predicted_idx = LETTER_TO_INDEX[matched]
-                else:
-                    print(f"error in q {q_idx}: got {repr(res)}")
-                    acc_list.append(0)
-                    continue
-        except Exception as e:
-            acc_list.append(0)
-            continue
+                text = res.content
+
+            pred = extract_answer(text)
+            if pred is None:
+                pred = random.choice(CHOICES)
+
+            predicted_idx = LETTER_TO_INDEX.get(pred, -1)
+        except Exception:
+            predicted_idx = LETTER_TO_INDEX[random.choice(CHOICES)]
 
         if predicted_idx == answers[q_idx]:
             acc_list.append(1)
@@ -371,10 +476,12 @@ if __name__ == "__main__":
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
-    parser.add_argument('--max_workers', type=int, default=10)
+    parser.add_argument('--max_workers', type=int, default=50)
     parser.add_argument('--save_dir', type=str, default='../results/')
     parser.add_argument('--expr_name', type=str, default="mmlu_pro_ours_results")
-    parser.add_argument('--n_generation', type=int, default=30)
+    parser.add_argument('--n_generation', type=int, default=20)
+    parser.add_argument('--total_token_budget', type=int, default=None,
+                        help='Stop search early when total tokens (search + execution) exceed this limit. Default: no limit.')
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--search_model', type=str, default='google/gemini-2.5-flash',
                         help='Meta-LLM used to generate new agent designs')

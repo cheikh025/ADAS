@@ -6,26 +6,13 @@ import numpy as np
 
 Example = namedtuple('Example', ['question', 'choice1', 'choice2', 'choice3', 'choice4', 'correct_index'])
 
-QUERY_TEMPLATE_MULTICHOICE = """
-Answer the following multiple choice question.
-
-{Question}
-
-(A) {A}
-(B) {B}
-(C) {C}
-(D) {D}
-(E) {E}
-(F) {F}
-(G) {G}
-(H) {H}
-(I) {I}
-(J) {J}
-""".strip()
-
-
 def format_multichoice_question(row):
-    return QUERY_TEMPLATE_MULTICHOICE.format(**row)
+    options = ""
+    for letter in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        val = row.get(letter)
+        if val is not None and not (isinstance(val, float) and np.isnan(val)):
+            options += f"\n({letter}) {val}"
+    return f"Answer the following multiple choice question.\n\n{row['Question']}{options}"
 
 
 def random_id(length=4):

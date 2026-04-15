@@ -95,6 +95,7 @@ def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
         temperature=SEARCH_TEMPERATURE if temperature is None else temperature,
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
+        timeout=120,
     )
     if response.usage:
         _search_input_tokens += response.usage.prompt_tokens
@@ -196,6 +197,10 @@ def search(args):
             json.dump(archive, f, indent=4)
 
     for n in range(start, args.n_generation):
+        total_tokens = _search_input_tokens + _search_output_tokens + _exec_input_tokens + _exec_output_tokens
+        if args.total_token_budget is not None and total_tokens >= args.total_token_budget:
+            print(f"Token budget reached: {total_tokens:,} >= {args.total_token_budget:,} — stopping search.")
+            break
         print(f"============Generation {n + 1}=================")
         system_prompt, prompt = get_prompt(archive)
         msg_list = [
@@ -352,10 +357,10 @@ def evaluate_forward_fn(args, forward_str):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
         results = [None] * len(task_queue)
-        for future in tqdm(as_completed(future_to_idx), total=len(task_queue)):
+        for future in tqdm(as_completed(future_to_idx, timeout=300), total=len(task_queue)):
             idx = future_to_idx[future]
             try:
-                results[idx] = future.result()
+                results[idx] = future.result(timeout=180)
             except Exception:
                 results[idx] = None
 
@@ -381,10 +386,12 @@ if __name__ == "__main__":
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
-    parser.add_argument('--max_workers', type=int, default=10)
+    parser.add_argument('--max_workers', type=int, default=50)
     parser.add_argument('--save_dir', type=str, default='../results/')
     parser.add_argument('--expr_name', type=str, default="math_ours_results")
     parser.add_argument('--n_generation', type=int, default=20)
+    parser.add_argument('--total_token_budget', type=int, default=None,
+                        help='Stop search early when total tokens (search + execution) exceed this limit. Default: no limit.')
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--search_model', type=str, default='google/gemini-2.5-flash',
                         help='Meta-LLM used to generate new agent designs')

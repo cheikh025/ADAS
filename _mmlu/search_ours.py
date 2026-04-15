@@ -28,6 +28,7 @@ import copy
 import json
 import os
 import random
+import threading
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from typing import Union
@@ -63,6 +64,11 @@ EVAL_TEMPERATURE = 1.0
 MAX_TOKENS = 32768
 PROVIDER_ROUTING = None  # e.g. {"order": ["Google Vertex", "Together", "Groq"], "allow_fallbacks": True}
 
+# ── Token tracking (execution calls only) ────────────────────────────────────
+_exec_input_tokens  = 0
+_exec_output_tokens = 0
+_exec_token_lock    = threading.Lock()
+
 
 def make_client(base_url: str, api_key: str) -> openai.OpenAI:
     return openai.OpenAI(base_url=base_url, api_key=api_key)
@@ -70,6 +76,7 @@ def make_client(base_url: str, api_key: str) -> openai.OpenAI:
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(msg, model, system_message, temperature=None):
+    global _exec_input_tokens, _exec_output_tokens
     extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
     response = client.chat.completions.create(
         model=model,
@@ -81,6 +88,10 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
     )
+    if response.usage:
+        with _exec_token_lock:
+            _exec_input_tokens  += response.usage.prompt_tokens
+            _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = json.loads(content)
     assert json_dict is not None
