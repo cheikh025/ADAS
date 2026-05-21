@@ -81,7 +81,6 @@ MATH_LEVEL = "Level 5"
 
 MATH_TRAIN_JSONL        = _ADAS_DIR / "dataset/math_4subjects.jsonl"
 MMLU_TRAIN_CSV          = _ADAS_DIR / "dataset/mmlu_4subjects.csv"
-MMLU_PRO_VALIDATE_JSONL = _AFLOW_DIR / "data/datasets/mmlu_pro_validate.jsonl"
 FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
 MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
 MMLU_HF_CACHE           = _AFLOW_DIR / "data/mmlu_hf_cache"
@@ -212,14 +211,10 @@ def load_mmlu_fingerprints() -> set:
 
 
 def load_mmlu_pro_fingerprints() -> set:
-    if not MMLU_PRO_VALIDATE_JSONL.exists():
-        print(f"  [warn] mmlu_pro_validate.jsonl not found: {MMLU_PRO_VALIDATE_JSONL}")
-        return set()
-    fps = set()
-    with open(MMLU_PRO_VALIDATE_JSONL, encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                fps.add(json.loads(line)["question"])
+    import pandas as pd
+    train_csv = _ADAS_DIR / "dataset/mmlu_pro_4categories.csv"
+    df = pd.read_csv(train_csv)
+    fps = set(df["Question"].tolist())
     print(f"  MMLU-Pro training fingerprints: {len(fps)}")
     return fps
 
