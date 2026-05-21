@@ -62,6 +62,7 @@ _exec_output_tokens = 0
 _total_questions_evaluated = 0
 _exec_token_lock = threading.Lock()
 
+
 # MMLU-Pro: 10 answer options (A-J)
 LETTER_TO_INDEX = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4,
                    'F': 5, 'G': 6, 'H': 7, 'I': 8, 'J': 9}
@@ -153,7 +154,13 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
             _exec_input_tokens  += response.usage.prompt_tokens
             _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
-    json_dict = json.loads(content)
+    json_dict = repair_json(content, return_objects=True)
+    if isinstance(json_dict, list):
+        merged = {}
+        for item in json_dict:
+            if isinstance(item, dict):
+                merged.update(item)
+        json_dict = merged
     assert json_dict is not None
     return json_dict
 
@@ -235,9 +242,11 @@ class LLMAgentBase():
                 if len(response_json) > len(self.output_fields) and not key in self.output_fields:
                     del response_json[key]
         output_infos = []
-        for key, value in response_json.items():
+        for key in self.output_fields:
+            value = response_json.get(key, '')
             info = Info(key, self.__repr__(), value, iteration_idx)
             output_infos.append(info)
+
         return output_infos
 
     def __repr__(self):
@@ -455,49 +464,40 @@ def evaluate_forward_fn(args, forward_str):
 
     for q_idx, res in enumerate(results):
         try:
-            # Unwrap Info objects or lists
-            if isinstance(res, list):
-                text = res[1].content if len(res) > 1 else res[0].content
-            elif isinstance(res, str):
-                text = res
-            else:
-                text = res.content
-
-            pred = extract_answer(text)
-            if pred is None:
-                pred = random.choice(CHOICES)
-
-            predicted_idx = LETTER_TO_INDEX.get(pred, -1)
+            pred = extract_answer(res)
+            if pred is None and isinstance(res, list):
+                for elem in res:
+                    pred = extract_answer(elem)
+                    if pred is not None:
+                        break
+            predicted_idx = LETTER_TO_INDEX.get(pred, -1) if pred is not None else -1
         except Exception:
-            predicted_idx = LETTER_TO_INDEX[random.choice(CHOICES)]
+            predicted_idx = -1
 
-        if predicted_idx == answers[q_idx]:
-            acc_list.append(1)
-        else:
-            acc_list.append(0)
+        acc_list.append(1 if predicted_idx == answers[q_idx] else 0)
 
-    print(f"acc: {bootstrap_confidence_interval(acc_list)}")
+    print(f"\nacc: {bootstrap_confidence_interval(acc_list)}")
     return acc_list
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_filename', type=str, default="../dataset/mmlu_pro_4categories.csv")
+    parser.add_argument('--data_filename', type=str, default="dataset/mmlu_pro_4categories.csv")
     parser.add_argument('--valid_size', type=int, default=80)  # 20 per category x 4 categories
     parser.add_argument('--test_size', type=int, default=0)
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
     parser.add_argument('--max_workers', type=int, default=50)
-    parser.add_argument('--save_dir', type=str, default='../results/')
+    parser.add_argument('--save_dir', type=str, default='results/')
     parser.add_argument('--expr_name', type=str, default="mmlu_pro_ours_results")
-    parser.add_argument('--n_generation', type=int, default=20)
+    parser.add_argument('--n_generation', type=int, default=25)
     parser.add_argument('--total_token_budget', type=int, default=None,
                         help='Stop search early when total tokens (search + execution) exceed this limit. Default: no limit.')
     parser.add_argument('--debug_max', type=int, default=3)
-    parser.add_argument('--search_model', type=str, default='google/gemini-2.5-flash',
+    parser.add_argument('--search_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='Meta-LLM used to generate new agent designs')
-    parser.add_argument('--eval_model', type=str, default=None,
+    parser.add_argument('--eval_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='LLM used inside forward() to answer questions (defaults to --search_model)')
     parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1',
                         help='API base URL (OpenAI, OpenRouter, Groq, etc.)')
@@ -509,16 +509,16 @@ if __name__ == "__main__":
                         help='Max tokens for exec LLM calls inside forward()')
     parser.add_argument('--search_temperature', type=float, default=0.8)
     parser.add_argument('--eval_temperature', type=float, default=1.0)
-    parser.add_argument('--provider_order', type=str, default=None,
+    parser.add_argument('--provider_order', type=str, default="deepseek, alibaba",
                         help='Comma-separated OpenRouter provider order for the exec LLM, e.g. "Google Vertex,Together"')
-    parser.add_argument('--no_exec_thinking', action='store_true', default=False,
+    parser.add_argument('--no_exec_thinking', action='store_true', default=True,
                         help='Disable thinking/reasoning for the exec LLM (passes reasoning.effort=none via extra_body)')
-    parser.add_argument('--search_provider_order', type=str, default=None,
+    parser.add_argument('--search_provider_order', type=str, default="deepseek, alibaba",
                         help='Comma-separated OpenRouter provider order for the search/meta LLM, e.g. "novita,Together"')
-    parser.add_argument('--search_thinking', type=str, default=None, choices=['none', 'medium', 'high'],
+    parser.add_argument('--search_thinking', type=str, default='high', choices=['none', 'medium', 'high'],
                         help='reasoning.effort for the search/meta LLM (none/medium/high). Default: no override')
 
-    args = parser.parse_args()
+    args = parser.parse_args()  
 
     api_key = args.api_key
     if api_key is None:

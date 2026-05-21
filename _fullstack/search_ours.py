@@ -92,7 +92,13 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
             _exec_input_tokens  += response.usage.prompt_tokens
             _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
-    json_dict = json.loads(content)
+    json_dict = repair_json(content, return_objects=True)
+    if isinstance(json_dict, list):
+        merged = {}
+        for item in json_dict:
+            if isinstance(item, dict):
+                merged.update(item)
+        json_dict = merged
     assert json_dict is not None
     return json_dict
 
@@ -169,7 +175,8 @@ class LLMAgentBase():
                 if len(response_json) > len(self.output_fields) and key not in self.output_fields:
                     del response_json[key]
         output_infos = []
-        for key, value in response_json.items():
+        for key in self.output_fields:
+            value = response_json.get(key, '')
             info = Info(key, self.__repr__(), value, iteration_idx)
             output_infos.append(info)
         return output_infos
