@@ -143,6 +143,8 @@ def load_search_module(dataset: str):
         module_dir = _ADAS_DIR / "_math"
     elif dataset == "FullStack":
         module_dir = _ADAS_DIR / "_fullstack"
+    elif dataset == "MMLUPro":
+        module_dir = _ADAS_DIR / "_mmlu_pro"
     else:
         module_dir = _ADAS_DIR / "_mmlu"
     sys.path.insert(0, str(module_dir))

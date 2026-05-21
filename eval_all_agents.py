@@ -108,7 +108,7 @@ def find_best_agent(archive_path: Path) -> dict:
 
 def get_baseline_agents(archive_path: Path) -> List[dict]:
     """Return initial-archive entries for the dataset-appropriate baseline names."""
-    names = FULLSTACK_BASELINE_NAMES if DATASET == "FullStack" else MATH_MMLU_BASELINE_NAMES
+    names = BASELINE_NAMES
     with open(archive_path) as f:
         archive = json.load(f)
     initial = {a["name"]: a for a in archive if a.get("generation") == "initial"}
