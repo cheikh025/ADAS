@@ -95,7 +95,8 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
             if isinstance(item, dict):
                 merged.update(item)
         json_dict = merged
-    assert json_dict is not None
+    if not isinstance(json_dict, dict):
+        json_dict = {}
     return json_dict
 
 

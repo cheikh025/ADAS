@@ -161,7 +161,8 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
             if isinstance(item, dict):
                 merged.update(item)
         json_dict = merged
-    assert json_dict is not None
+    if not isinstance(json_dict, dict):
+        json_dict = {}
     return json_dict
 
 
@@ -459,8 +460,15 @@ def evaluate_forward_fn(args, forward_str):
 
     agentSystem = AgentSystem()
     acc_list = []
+
+    def safe_forward(task):
+        try:
+            return agentSystem.forward(task)
+        except Exception:
+            return None
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(tqdm(executor.map(agentSystem.forward, task_queue), total=len(task_queue)))
+        results = list(tqdm(executor.map(safe_forward, task_queue), total=len(task_queue)))
 
     for q_idx, res in enumerate(results):
         try:
