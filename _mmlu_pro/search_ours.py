@@ -18,7 +18,7 @@ import random
 import re
 import threading
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Union
 
 import backoff
@@ -461,14 +461,15 @@ def evaluate_forward_fn(args, forward_str):
     agentSystem = AgentSystem()
     acc_list = []
 
-    def safe_forward(task):
-        try:
-            return agentSystem.forward(task)
-        except Exception:
-            return None
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(tqdm(executor.map(safe_forward, task_queue), total=len(task_queue)))
+        future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
+        results = [None] * len(task_queue)
+        for future in tqdm(as_completed(future_to_idx, timeout=300), total=len(task_queue)):
+            idx = future_to_idx[future]
+            try:
+                results[idx] = future.result(timeout=180)
+            except Exception:
+                results[idx] = None
 
     for q_idx, res in enumerate(results):
         try:
