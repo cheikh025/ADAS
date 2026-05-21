@@ -77,7 +77,7 @@ LLM_debate = {
     debate_initial_instruction = "Please think step by step and then solve the task."
     debate_instruction = "Given solutions to the problem from other agents, consider their opinions as additional advice. Please think carefully and provide an updated answer."
 
-    debate_agents = [LLMAgentBase(['thinking', 'answer'], 'Debate Agent', temperature=0.8, role=role) for role in ['Law Expert', 'History Expert', 'Philosophy Expert', 'Generalist']]
+    debate_agents = [LLMAgentBase(['thinking', 'answer'], 'Debate Agent', temperature=0.8, role=role) for role in ['Economics Expert', 'Physics Expert', 'Philosophy Expert', 'Generalist']]
 
     final_decision_instruction = "Given all the above thinking and answers, reason over them carefully and provide a final answer."
     final_decision_agent = LLMAgentBase(['thinking', 'answer'], 'Final Decision Agent', temperature=0.1)
@@ -150,16 +150,16 @@ Role_Assignment = {
     "name": "Dynamic Assignment of Roles",
     "code": """def forward(self, taskInfo):
         cot_instruction = "Please think step by step and then solve the task."
-        expert_agents = [LLMAgentBase(['thinking', 'answer'], 'Expert Agent', role=role) for role in ['Law Expert', 'History Expert', 'Philosophy Expert', 'Engineering Expert', 'Generalist']]
+        expert_agents = [LLMAgentBase(['thinking', 'answer'], 'Expert Agent', role=role) for role in ['Economics Expert', 'Physics Expert', 'Philosophy Expert', 'Engineering Expert', 'Generalist']]
 
-        routing_instruction = "Given the task, please choose an Expert to answer the question. Choose from: Law, History, Philosophy, Engineering Expert, or Generalist."
+        routing_instruction = "Given the task, please choose an Expert to answer the question. Choose from: Economics, Physics, Philosophy, Engineering Expert, or Generalist."
         routing_agent = LLMAgentBase(['choice'], 'Routing agent')
 
         choice = routing_agent([taskInfo], routing_instruction)[0]
 
-        if 'law' in choice.content.lower():
+        if 'economics' in choice.content.lower():
             expert_id = 0
-        elif 'history' in choice.content.lower():
+        elif 'physics' in choice.content.lower():
             expert_id = 1
         elif 'philosophy' in choice.content.lower():
             expert_id = 2
@@ -359,6 +359,21 @@ reasoning_agent = LLMAgentBase(['thinking', 'answer'], 'Reasoning Agent')
 thinking, answer = reasoning_agent([taskInfo] + ..., reasoning_instruction)
 return answer
 ```
+
+5. This is WRONG: ```
+import sympy as sp
+import re
+
+def forward(self, taskInfo):
+    ...
+```
+Do NOT add any import statements or top-level code outside the forward() function body. All necessary imports (json, collections, etc.) are already available. If you need collections.Counter, import it inside the function as shown in the archive examples.
+
+6. This is WRONG: ```
+def forward(self, taskInfo) -> Union[Info, str]:
+    ...
+```
+Do NOT use return type annotations that require imports. Just write `def forward(self, taskInfo):` with no return type hint.
 
 # Your task
 You are deeply familiar with LLM prompting techniques and LLM agent works from the literature. Your goal is to maximize "fitness" by proposing interestingly new agents.

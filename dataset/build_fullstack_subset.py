@@ -1,8 +1,9 @@
 """
 Build ADAS-compatible JSONL with the same FullStackBench subset used by MAS.
 
-Categories: Advanced Programming, Operating System, Machine Learning
-Difficulty: hard, Locale: en, Seed: 42, N_PER_CATEGORY: 3 = 9 total.
+Categories: Advanced Programming, Scientific Computing, Data Analysis,
+            Desktop and Web Development
+Difficulty: hard, Locale: en, Seed: 42, N_PER_CATEGORY: 3 = 12 total.
 
 Output: dataset/fullstack_subset.jsonl
 Each row: {id, content, category, difficulty, programming_language, raw_example}
@@ -19,7 +20,12 @@ from pathlib import Path
 
 from datasets import load_dataset
 
-CATEGORIES = ["Advanced Programming", "Operating System", "Machine Learning"]
+CATEGORIES = [
+    "Advanced Programming",
+    "Scientific Computing",
+    "Data Analysis",
+    "Desktop and Web Development",
+]
 DIFFICULTY = "hard"
 LOCALE = "en"
 SEED = 42

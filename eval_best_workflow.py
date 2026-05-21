@@ -50,6 +50,12 @@ SEED             = 99       # sampling seed (training used 42)
 K_ROUND_EVAL     = 5       # number of eval rounds (scores averaged); matches MAS_pro
 # ──────────────────────────────────────────────────────────────────────────────
 
+FULLSTACK_SUBJECTS = [
+    "Advanced Programming",
+    "Scientific Computing",
+    "Data Analysis",
+    "Desktop and Web Development",
+]
 MATH_SUBJECTS = [
     "Number Theory",
     "Precalculus",
@@ -64,23 +70,30 @@ MMLU_SUBJECTS = [
     "econometrics",
 ]
 MMLU_PRO_SUBJECTS = [
-    "law",
-    "history",
+    "economics",
+    "physics",
     "philosophy",
     "engineering",
 ]
 MATH_LEVEL = "Level 5"
 
-MATH_TRAIN_JSONL      = _ADAS_DIR / "dataset/math_4subjects.jsonl"
-MMLU_TRAIN_CSV        = _ADAS_DIR / "dataset/mmlu_4subjects.csv"
+MATH_TRAIN_JSONL        = _ADAS_DIR / "dataset/math_4subjects.jsonl"
+MMLU_TRAIN_CSV          = _ADAS_DIR / "dataset/mmlu_4subjects.csv"
 MMLU_PRO_VALIDATE_JSONL = _AFLOW_DIR / "data/datasets/mmlu_pro_validate.jsonl"
-MATH_RAW_TEST_DIR     = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
-MMLU_HF_CACHE         = _AFLOW_DIR / "data/mmlu_hf_cache"
-MMLU_PRO_HF_CACHE     = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
+FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
+MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
+MMLU_HF_CACHE           = _AFLOW_DIR / "data/mmlu_hf_cache"
+MMLU_PRO_HF_CACHE       = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
+FULLSTACK_HF_CACHE      = _AFLOW_DIR / "data/fullstack_hf_cache"
 
-MATH_ARCHIVE     = _ADAS_DIR / "results/math_ours_results_run_archive.json"
-MMLU_ARCHIVE     = _ADAS_DIR / "results/mmlu_ours_results_run_archive.json"
-MMLU_PRO_ARCHIVE = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
+SANDBOX_ENDPOINT        = os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
+SANDBOX_COMPILE_TIMEOUT = 50
+SANDBOX_RUN_TIMEOUT     = 50
+
+MATH_ARCHIVE      = _ADAS_DIR / "results/math_ours_results_run_archive.json"
+MMLU_ARCHIVE      = _ADAS_DIR / "results/mmlu_ours_results_run_archive.json"
+MMLU_PRO_ARCHIVE  = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
+FULLSTACK_ARCHIVE = _ADAS_DIR / "results/fullstack_ours_results_run_archive.json"
 
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
 LETTER_TO_INDEX     = {"A": 0, "B": 1, "C": 2, "D": 3}
@@ -126,7 +139,12 @@ def load_search_module(dataset: str):
     patching its globals so the forward function code can call
     LLMAgentBase, get_json_response_from_gpt, client, MODEL, etc.
     """
-    module_dir = _ADAS_DIR / ("_math" if dataset == "MATH" else "_mmlu")
+    if dataset == "MATH":
+        module_dir = _ADAS_DIR / "_math"
+    elif dataset == "FullStack":
+        module_dir = _ADAS_DIR / "_fullstack"
+    else:
+        module_dir = _ADAS_DIR / "_mmlu"
     sys.path.insert(0, str(module_dir))
     try:
         spec = importlib.util.spec_from_file_location(
@@ -344,6 +362,62 @@ def build_mmlu_pro_heldout(rng: random.Random) -> List[dict]:
     return records
 
 
+def load_fullstack_fingerprints() -> set:
+    fps = set()
+    with open(FULLSTACK_TRAIN_JSONL, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                fps.add(json.loads(line)["id"])
+    print(f"  FullStack training fingerprints: {len(fps)}")
+    return fps
+
+
+def build_fullstack_heldout(rng: random.Random) -> List[dict]:
+    """
+    Load FullStackBench hard/en examples for the 4 categories, exclude
+    training fingerprints (by id), sample up to NUM_EVAL_QUERIES per category.
+    Returns list of dicts matching fullstack_subset.jsonl schema.
+    """
+    fps = load_fullstack_fingerprints()
+
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("Install 'datasets': pip install datasets")
+
+    print("  Loading FullStackBench from HuggingFace cache...")
+    ds = load_dataset(
+        "ByteDance/FullStackBench", "en",
+        split="test",
+        cache_dir=str(FULLSTACK_HF_CACHE) if FULLSTACK_HF_CACHE.exists() else None,
+    )
+    test_split = list(ds)
+
+    records = []
+    for category in FULLSTACK_SUBJECTS:
+        pool = [
+            ex for ex in test_split
+            if ex["labels"].get("category") == category
+            and ex["labels"].get("difficulty") == "hard"
+            and ex["id"] not in fps
+        ]
+        n = min(NUM_EVAL_QUERIES, len(pool))
+        if n < NUM_EVAL_QUERIES:
+            print(f"  [warn] {category}: only {n} held-out available (requested {NUM_EVAL_QUERIES})")
+        sampled = rng.sample(pool, n)
+        for ex in sampled:
+            records.append({
+                "id": ex["id"],
+                "content": ex["content"],
+                "category": ex["labels"]["category"],
+                "difficulty": ex["labels"]["difficulty"],
+                "programming_language": ex["labels"]["programming_language"],
+                "raw_example": dict(ex),
+            })
+        print(f"  {category}: {n} held-out queries")
+    return records
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -471,6 +545,36 @@ def run_mmlu_pro_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_subject.items()}
 
 
+def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
+    from _fullstack.utils import format_task, score_fullstack
+    task_queue = [Info("task", "User", format_task(ex), -1) for ex in held_out]
+
+    workers = min(len(held_out), MAX_WORKERS)
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        from tqdm import tqdm
+        results = list(tqdm(exe.map(agent_system.forward, task_queue),
+                            total=len(task_queue), desc="FullStack eval"))
+
+    per_category: Dict[str, List[int]] = {s: [] for s in FULLSTACK_SUBJECTS}
+    for idx, res in enumerate(results):
+        try:
+            prediction = res.content if isinstance(res, Info) else str(res)
+            pass_rate = score_fullstack(
+                prediction=prediction,
+                raw_example=held_out[idx]["raw_example"],
+                sandbox_endpoint=SANDBOX_ENDPOINT,
+                compile_timeout=SANDBOX_COMPILE_TIMEOUT,
+                run_timeout=SANDBOX_RUN_TIMEOUT,
+            )
+            score = 1 if pass_rate >= 1.0 else 0
+        except Exception as e:
+            print(f"  Scoring error q{idx}: {e}")
+            score = 0
+        per_category[held_out[idx]["category"]].append(score)
+
+    return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_category.items()}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # K-round averaging
 # ─────────────────────────────────────────────────────────────────────────────
@@ -509,6 +613,8 @@ def save_results(per_subject: dict, agent_name: str, dataset: str, avg_tokens_pe
         subjects = MATH_SUBJECTS
     elif dataset == "MMLUPro":
         subjects = MMLU_PRO_SUBJECTS
+    elif dataset == "FullStack":
+        subjects = FULLSTACK_SUBJECTS
     else:
         subjects = MMLU_SUBJECTS
     avg = sum(per_subject[s] for s in subjects) / len(subjects)
@@ -550,6 +656,8 @@ def main():
         archive_path = MATH_ARCHIVE
     elif DATASET == "MMLUPro":
         archive_path = MMLU_PRO_ARCHIVE
+    elif DATASET == "FullStack":
+        archive_path = FULLSTACK_ARCHIVE
     else:
         archive_path = MMLU_ARCHIVE
     best_agent = find_best_agent(archive_path)
@@ -581,6 +689,8 @@ def main():
         held_out = build_math_heldout(rng)
     elif DATASET == "MMLUPro":
         held_out = build_mmlu_pro_heldout(rng)
+    elif DATASET == "FullStack":
+        held_out = build_fullstack_heldout(rng)
     else:
         held_out = build_mmlu_heldout(rng)
     print(f"Total held-out examples: {len(held_out)}")
@@ -596,6 +706,8 @@ def main():
             round_result = run_math_eval(agent_system, mod.score_math, held_out)
         elif DATASET == "MMLUPro":
             round_result = run_mmlu_pro_eval(agent_system, held_out)
+        elif DATASET == "FullStack":
+            round_result = run_fullstack_eval(agent_system, held_out)
         else:
             round_result = run_mmlu_eval(agent_system, held_out, mod.format_multichoice_question)
         round_tokens.append(_read_exec_tokens(mod))
@@ -609,6 +721,8 @@ def main():
         subjects = MATH_SUBJECTS
     elif DATASET == "MMLUPro":
         subjects = MMLU_PRO_SUBJECTS
+    elif DATASET == "FullStack":
+        subjects = FULLSTACK_SUBJECTS
     else:
         subjects = MMLU_SUBJECTS
     avg = sum(per_subject[s] for s in subjects) / len(subjects)

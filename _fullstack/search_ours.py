@@ -1,8 +1,9 @@
 """
-ADAS FullStackBench search configured for our 3-category comparison experiment.
+ADAS FullStackBench search configured for our 4-category comparison experiment.
 
-Categories: Advanced Programming, Operating System, Machine Learning
-Difficulty: hard, seed=42, 3 per category = 9 total.
+Categories: Advanced Programming, Scientific Computing, Data Analysis,
+            Desktop and Web Development
+Difficulty: hard, seed=42, 3 per category = 12 total.
 
 Requires SandboxFusion running at SANDBOX_FUSION_ENDPOINT (default: http://localhost:8080).
 
@@ -17,6 +18,7 @@ import copy
 import json
 import os
 import random
+import threading
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -49,6 +51,18 @@ SEARCH_TEMPERATURE = 0.8
 EVAL_TEMPERATURE = 1.0
 MAX_TOKENS = 32768
 PROVIDER_ROUTING = None
+EXEC_NO_THINKING = False
+EXEC_MAX_TOKENS = 8600
+SEARCH_PROVIDER_ROUTING = None
+SEARCH_THINKING = None
+
+# ── Token tracking ────────────────────────────────────────────────────────────
+_search_input_tokens = 0
+_search_output_tokens = 0
+_exec_input_tokens = 0
+_exec_output_tokens = 0
+_total_questions_evaluated = 0
+_exec_token_lock = threading.Lock()
 
 
 def make_client(base_url: str, api_key: str) -> openai.OpenAI:
@@ -57,7 +71,12 @@ def make_client(base_url: str, api_key: str) -> openai.OpenAI:
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(msg, model, system_message, temperature=None):
-    extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
+    global _exec_input_tokens, _exec_output_tokens
+    extra = {}
+    if PROVIDER_ROUTING:
+        extra["provider"] = PROVIDER_ROUTING
+    if EXEC_NO_THINKING:
+        extra["reasoning"] = {"effort": "none"}
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -65,9 +84,13 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
             {"role": "user", "content": msg},
         ],
         temperature=EVAL_TEMPERATURE if temperature is None else temperature,
-        max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
+        max_tokens=EXEC_MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
     )
+    if response.usage:
+        with _exec_token_lock:
+            _exec_input_tokens  += response.usage.prompt_tokens
+            _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = json.loads(content)
     assert json_dict is not None
@@ -76,7 +99,12 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
-    extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
+    global _search_input_tokens, _search_output_tokens
+    extra = {}
+    if SEARCH_PROVIDER_ROUTING:
+        extra["provider"] = SEARCH_PROVIDER_ROUTING
+    if SEARCH_THINKING is not None:
+        extra["reasoning"] = {"effort": SEARCH_THINKING}
     response = client.chat.completions.create(
         model=model,
         messages=msg_list,
@@ -84,6 +112,9 @@ def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
     )
+    if response.usage:
+        _search_input_tokens  += response.usage.prompt_tokens
+        _search_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = repair_json(content, return_objects=True)
     assert json_dict is not None
@@ -230,6 +261,37 @@ def search(args):
         with open(file_path, 'w') as f:
             json.dump(archive, f, indent=4)
 
+    log_token_usage(args.save_dir, args.expr_name)
+
+
+def log_token_usage(save_dir: str, expr_name: str):
+    search_total = _search_input_tokens + _search_output_tokens
+    exec_total   = _exec_input_tokens   + _exec_output_tokens
+    avg_exec_per_question = (
+        exec_total / _total_questions_evaluated if _total_questions_evaluated > 0 else 0
+    )
+
+    print("\n" + "=" * 60)
+    print("TOKEN USAGE REPORT")
+    print("=" * 60)
+    print(f"Search tokens    — total: {search_total:,}  |  input: {_search_input_tokens:,}  |  output: {_search_output_tokens:,}")
+    print(f"Execution tokens — total: {exec_total:,}  |  input: {_exec_input_tokens:,}  |  output: {_exec_output_tokens:,}")
+    print(f"Avg execution tokens per question: {avg_exec_per_question:.1f}  (over {_total_questions_evaluated:,} questions)")
+    print("=" * 60 + "\n")
+
+    report = {
+        "search":    {"total_tokens": search_total,  "input_tokens": _search_input_tokens, "output_tokens": _search_output_tokens},
+        "execution": {"total_tokens": exec_total,    "input_tokens": _exec_input_tokens,   "output_tokens": _exec_output_tokens},
+        "avg_execution_tokens_per_question": round(avg_exec_per_question, 2),
+        "total_questions_evaluated": _total_questions_evaluated,
+    }
+
+    os.makedirs(save_dir, exist_ok=True)
+    report_path = os.path.join(save_dir, f"{expr_name}_token_usage.json")
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=4)
+    print(f"Token usage report saved to: {report_path}")
+
 
 def evaluate(args):
     file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
@@ -283,6 +345,8 @@ def evaluate_forward_fn(args, forward_str):
     else:
         examples = examples[args.valid_size:args.valid_size + args.test_size] * args.n_repreat
 
+    global _total_questions_evaluated
+    _total_questions_evaluated += len(examples)
     print(f"problem length: {len(examples)}")
     max_workers = min(len(examples), args.max_workers) if args.multiprocessing else 1
 
@@ -317,7 +381,7 @@ def evaluate_forward_fn(args, forward_str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_filename', type=str, default="../dataset/fullstack_subset.jsonl")
-    parser.add_argument('--valid_size', type=int, default=9)
+    parser.add_argument('--valid_size', type=int, default=12)
     parser.add_argument('--test_size', type=int, default=0)
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
@@ -342,13 +406,21 @@ if __name__ == "__main__":
     parser.add_argument('--api_key', type=str, default=None,
                         help='Falls back to OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY')
     parser.add_argument('--max_tokens', type=int, default=32768,
-                        help='Max tokens for all LLM calls')
+                        help='Max tokens for the search/meta LLM calls')
+    parser.add_argument('--exec_max_tokens', type=int, default=8600,
+                        help='Max tokens for exec LLM calls inside forward()')
     parser.add_argument('--search_temperature', type=float, default=0.8,
                         help='Temperature for the meta-LLM (search/reflexion calls)')
     parser.add_argument('--eval_temperature', type=float, default=1.0,
                         help='Temperature for agent LLM calls during evaluation')
     parser.add_argument('--provider_order', type=str, default=None,
-                        help='Comma-separated OpenRouter provider order, e.g. "Google Vertex,Together,Groq"')
+                        help='Comma-separated OpenRouter provider order for the exec LLM, e.g. "Google Vertex,Together"')
+    parser.add_argument('--no_exec_thinking', action='store_true', default=False,
+                        help='Disable thinking/reasoning for the exec LLM (passes reasoning.effort=none via extra_body)')
+    parser.add_argument('--search_provider_order', type=str, default=None,
+                        help='Comma-separated OpenRouter provider order for the search/meta LLM, e.g. "novita,Together"')
+    parser.add_argument('--search_thinking', type=str, default=None, choices=['none', 'medium', 'high'],
+                        help='reasoning.effort for the search/meta LLM (none/medium/high). Default: no override')
 
     args = parser.parse_args()
 
@@ -373,7 +445,11 @@ if __name__ == "__main__":
     SEARCH_TEMPERATURE = args.search_temperature
     EVAL_TEMPERATURE = args.eval_temperature
     MAX_TOKENS = args.max_tokens
+    EXEC_MAX_TOKENS = args.exec_max_tokens
     PROVIDER_ROUTING = {"order": [p.strip() for p in args.provider_order.split(",")], "allow_fallbacks": True} if args.provider_order else None
+    EXEC_NO_THINKING = args.no_exec_thinking
+    SEARCH_PROVIDER_ROUTING = {"order": [p.strip() for p in args.search_provider_order.split(",")], "allow_fallbacks": True} if args.search_provider_order else None
+    SEARCH_THINKING = args.search_thinking
 
     SEARCHING_MODE = True
     search(args)

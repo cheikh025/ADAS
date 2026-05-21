@@ -46,16 +46,24 @@ Reflexion = {
     "thought": "An iterative refinement approach where the agent reflects on its own previous answer and improves it.",
     "name": "Self-Refine (Reflexion)",
     "code": """def forward(self, taskInfo):
-    cot_instruction = "Please think step by step and then solve the task. Put your final answer in \\\\boxed{...}."
+    cot_initial_instruction = "Please think step by step and then solve the math problem. Put your final answer in \\\\boxed{...}."
+    cot_reflect_instruction = "Given previous attempts and feedback, carefully consider where you could go wrong in your latest attempt. Using insights from previous attempts, try to solve the math problem better. Put your final answer in \\\\boxed{...}."
     cot_agent = LLMAgentBase(['thinking', 'answer'], 'Chain-of-Thought Agent')
-    thinking, answer = cot_agent([taskInfo], cot_instruction)
 
-    for i in range(3):
-        critic_instruction = "Review your previous answer. If it is incorrect or can be improved, provide a revised answer in \\\\boxed{...}. If it is correct, restate it."
-        critic_agent = LLMAgentBase(['reflection', 'answer'], 'Critic Agent')
-        reflection, new_answer = critic_agent([taskInfo, thinking, answer], critic_instruction, iteration_idx=i)
-        answer = new_answer
+    critic_instruction = "Please review the answer above and criticize on where might be wrong. If you are absolutely sure it is correct, output 'True' in 'correct'."
+    critic_agent = LLMAgentBase(['feedback', 'correct'], 'Critic Agent')
 
+    N_max = 5
+
+    cot_inputs = [taskInfo]
+    thinking, answer = cot_agent(cot_inputs, cot_initial_instruction, 0)
+
+    for i in range(N_max):
+        feedback, correct = critic_agent([taskInfo, thinking, answer], critic_instruction, i)
+        if correct.content == 'True':
+            break
+        cot_inputs.extend([thinking, answer, feedback])
+        thinking, answer = cot_agent(cot_inputs, cot_reflect_instruction, i + 1)
     return answer
 """
 }
@@ -64,25 +72,36 @@ LLM_debate = {
     "thought": "Multiple agents debate the solution, then a judge selects the best answer.",
     "name": "LLM Debate",
     "code": """def forward(self, taskInfo):
-    solve_instruction = "Please think step by step and solve the math problem. Put your answer in \\\\boxed{...}."
-    N = 3
-    agents = [LLMAgentBase(['thinking', 'answer'], f'Solver Agent {i}', temperature=0.8) for i in range(N)]
+    debate_initial_instruction = "Please think step by step and then solve the math problem. Put your answer in \\\\boxed{...}."
+    debate_instruction = "Given solutions to the problem from other agents, consider their opinions as additional advice. Please think carefully and provide an updated answer. Put your final answer in \\\\boxed{...}."
 
-    all_answers = []
-    for agent in agents:
-        thinking, answer = agent([taskInfo], solve_instruction)
-        all_answers.extend([thinking, answer])
+    debate_agents = [LLMAgentBase(['thinking', 'answer'], 'Debate Agent', temperature=0.8, role=role) for role in ['Number Theory Expert', 'Algebra Expert', 'Combinatorics Expert', 'Math Generalist']]
 
-    judge_instruction = "Given the math problem and several proposed solutions, select the most likely correct answer. Return it in \\\\boxed{...}."
-    judge_agent = LLMAgentBase(['thinking', 'answer'], 'Judge Agent', temperature=0.1)
-    thinking, answer = judge_agent([taskInfo] + all_answers, judge_instruction)
+    final_decision_instruction = "Given all the above thinking and answers, reason over them carefully and provide a final answer. Put your final answer in \\\\boxed{...}."
+    final_decision_agent = LLMAgentBase(['thinking', 'answer'], 'Final Decision Agent', temperature=0.1)
+
+    max_round = 2
+    all_thinking = [[] for _ in range(max_round)]
+    all_answer = [[] for _ in range(max_round)]
+
+    for r in range(max_round):
+        for i in range(len(debate_agents)):
+            if r == 0:
+                thinking, answer = debate_agents[i]([taskInfo], debate_initial_instruction)
+            else:
+                input_infos = [taskInfo] + [all_thinking[r-1][i]] + all_thinking[r-1][:i] + all_thinking[r-1][i+1:]
+                thinking, answer = debate_agents[i](input_infos, debate_instruction)
+            all_thinking[r].append(thinking)
+            all_answer[r].append(answer)
+
+    thinking, answer = final_decision_agent([taskInfo] + all_thinking[max_round-1] + all_answer[max_round-1], final_decision_instruction)
     return answer
 """
 }
 
 Take_a_step_back = {
     "thought": "First derive the general principle or formula, then apply it to solve the specific problem.",
-    "name": "Step-Back Abstraction",
+    "name": "Step-back Abstraction",
     "code": """def forward(self, taskInfo):
     principle_instruction = "What is the general mathematical principle, theorem, or formula needed to solve this type of problem? Do not solve it yet."
     principle_agent = LLMAgentBase(['thinking', 'principle'], 'Principle Agent')
@@ -92,6 +111,62 @@ Take_a_step_back = {
     solve_agent = LLMAgentBase(['thinking', 'answer'], 'Solver Agent')
     thinking, answer = solve_agent([taskInfo, principle], solve_instruction)
     return answer
+"""
+}
+
+QD = {
+    "thought": "Similar to Quality-Diversity methods, let LLM generate multiple diverse interesting solutions could help. By encouraging the model to explore different reasoning paths, we can increase the chances of finding the best solution.",
+    "name": "Quality-Diversity",
+    "code": """def forward(self, taskInfo):
+    cot_initial_instruction = "Please think step by step and then solve the math problem. Put your final answer in \\\\boxed{...}."
+    qd_instruction = "Given previous attempts, try to come up with another interesting way to solve the math problem. Put your final answer in \\\\boxed{...}."
+    cot_agent = LLMAgentBase(['thinking', 'answer'], 'Chain-of-Thought Agent')
+
+    final_decision_instruction = "Given all the above solutions, reason over them carefully and provide a final answer in \\\\boxed{...}."
+    final_decision_agent = LLMAgentBase(['thinking', 'answer'], 'Final Decision Agent', temperature=0.1)
+
+    N_max = 3
+
+    cot_inputs = [taskInfo]
+    possible_answers = []
+    thinking, answer = cot_agent(cot_inputs, cot_initial_instruction, 0)
+    possible_answers.extend([thinking, answer])
+
+    for i in range(N_max):
+        cot_inputs.extend([thinking, answer])
+        thinking, answer = cot_agent(cot_inputs, qd_instruction, i + 1)
+        possible_answers.extend([thinking, answer])
+
+    thinking, answer = final_decision_agent([taskInfo] + possible_answers, final_decision_instruction)
+    return answer
+"""
+}
+
+Role_Assignment = {
+    "thought": "Similar to Auto-GPT and expert prompting, we can use dynamic control flow in the design to let the agent decide what expert we should use.",
+    "name": "Dynamic Assignment of Roles",
+    "code": """def forward(self, taskInfo):
+        cot_instruction = "Please think step by step and then solve the math problem. Put your final answer in \\\\boxed{...}."
+        expert_agents = [LLMAgentBase(['thinking', 'answer'], 'Expert Agent', role=role) for role in ['Number Theory Expert', 'Algebra and Precalculus Expert', 'Combinatorics Expert', 'Geometry Expert', 'Math Generalist']]
+
+        routing_instruction = "Given the math problem, please choose an Expert to answer the question. Choose from: Number Theory, Algebra and Precalculus, Combinatorics, Geometry Expert, or Math Generalist."
+        routing_agent = LLMAgentBase(['choice'], 'Routing Agent')
+
+        choice = routing_agent([taskInfo], routing_instruction)[0]
+
+        if 'number theory' in choice.content.lower():
+            expert_id = 0
+        elif 'algebra' in choice.content.lower() or 'precalculus' in choice.content.lower():
+            expert_id = 1
+        elif 'combinatorics' in choice.content.lower():
+            expert_id = 2
+        elif 'geometry' in choice.content.lower():
+            expert_id = 3
+        else:
+            expert_id = 4
+
+        thinking, answer = expert_agents[expert_id]([taskInfo], cot_instruction)
+        return answer
 """
 }
 
@@ -326,7 +401,7 @@ Put your new reflection thinking in "reflection". Repeat the previous "thought" 
 
 
 def get_init_archive():
-    return [COT, COT_SC, Reflexion, LLM_debate, Take_a_step_back]
+    return [COT, COT_SC, Reflexion, LLM_debate, Take_a_step_back, QD, Role_Assignment]
 
 
 def get_prompt(current_archive, adaptive=False):

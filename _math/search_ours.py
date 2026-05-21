@@ -1,8 +1,8 @@
 """
-ADAS MATH search configured for our 4-subject comparison experiment.
+ADAS MATH search configured for our 3-subject comparison experiment.
 
-Subjects: Prealgebra, Number Theory, Precalculus, Counting & Probability
-Level 5 only, seed=42, 10 per subject = 40 total.
+Subjects: Number Theory, Precalculus, Counting & Probability
+Level 5 only, seed=42, 20 per subject = 60 total.
 
 Usage:
     cd C:/Users/cheikh/Desktop/ADAS/_math
@@ -54,6 +54,10 @@ SEARCH_TEMPERATURE = 0.8
 EVAL_TEMPERATURE = 1.0
 MAX_TOKENS = 32768
 PROVIDER_ROUTING = None
+EXEC_NO_THINKING = False
+EXEC_MAX_TOKENS = 8600
+SEARCH_PROVIDER_ROUTING = None
+SEARCH_THINKING = None
 
 
 def make_client(base_url: str, api_key: str) -> openai.OpenAI:
@@ -63,7 +67,11 @@ def make_client(base_url: str, api_key: str) -> openai.OpenAI:
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(msg, model, system_message, temperature=None):
     global _exec_input_tokens, _exec_output_tokens
-    extra = {"provider": PROVIDER_ROUTING} if PROVIDER_ROUTING else {}
+    extra = {}
+    if PROVIDER_ROUTING:
+        extra["provider"] = PROVIDER_ROUTING
+    if EXEC_NO_THINKING:
+        extra["reasoning"] = {"effort": "none"}
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -71,7 +79,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
             {"role": "user", "content": msg},
         ],
         temperature=EVAL_TEMPERATURE if temperature is None else temperature,
-        max_tokens=10000, stop=None, response_format={"type": "json_object"},
+        max_tokens=EXEC_MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
         timeout=60,
     )
@@ -89,6 +97,10 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
 def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
     global _search_input_tokens, _search_output_tokens
     extra = {}
+    if SEARCH_PROVIDER_ROUTING:
+        extra["provider"] = SEARCH_PROVIDER_ROUTING
+    if SEARCH_THINKING is not None:
+        extra["reasoning"] = {"effort": SEARCH_THINKING}
     response = client.chat.completions.create(
         model=model,
         messages=msg_list,
@@ -381,7 +393,7 @@ def evaluate_forward_fn(args, forward_str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_filename', type=str, default="../dataset/math_4subjects.jsonl")
-    parser.add_argument('--valid_size', type=int, default=120)  # 30 per subject x 4 subjects
+    parser.add_argument('--valid_size', type=int, default=60)  # 20 per subject x 3 subjects
     parser.add_argument('--test_size', type=int, default=0)
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
@@ -402,13 +414,21 @@ if __name__ == "__main__":
     parser.add_argument('--api_key', type=str, default=None,
                         help='API key (falls back to OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY)')
     parser.add_argument('--max_tokens', type=int, default=32768,
-                        help='Max tokens for all LLM calls')
+                        help='Max tokens for the search/meta LLM calls')
+    parser.add_argument('--exec_max_tokens', type=int, default=8600,
+                        help='Max tokens for exec LLM calls inside forward()')
     parser.add_argument('--search_temperature', type=float, default=0.8,
                         help='Temperature for the meta-LLM (search/reflexion calls)')
     parser.add_argument('--eval_temperature', type=float, default=1.0,
                         help='Temperature for agent LLM calls during evaluation')
     parser.add_argument('--provider_order', type=str, default=None,
-                        help='Comma-separated OpenRouter provider order, e.g. "Google Vertex,Together,Groq"')
+                        help='Comma-separated OpenRouter provider order for the exec LLM, e.g. "Google Vertex,Together"')
+    parser.add_argument('--no_exec_thinking', action='store_true', default=False,
+                        help='Disable thinking/reasoning for the exec LLM (passes reasoning.effort=none via extra_body)')
+    parser.add_argument('--search_provider_order', type=str, default=None,
+                        help='Comma-separated OpenRouter provider order for the search/meta LLM, e.g. "novita,Together"')
+    parser.add_argument('--search_thinking', type=str, default=None, choices=['none', 'medium', 'high'],
+                        help='reasoning.effort for the search/meta LLM (none/medium/high). Default: no override')
 
     args = parser.parse_args()
 
@@ -433,7 +453,11 @@ if __name__ == "__main__":
     SEARCH_TEMPERATURE = args.search_temperature
     EVAL_TEMPERATURE = args.eval_temperature
     MAX_TOKENS = args.max_tokens
+    EXEC_MAX_TOKENS = args.exec_max_tokens
     PROVIDER_ROUTING = {"order": [p.strip() for p in args.provider_order.split(",")], "allow_fallbacks": True} if args.provider_order else None
+    EXEC_NO_THINKING = args.no_exec_thinking
+    SEARCH_PROVIDER_ROUTING = {"order": [p.strip() for p in args.search_provider_order.split(",")], "allow_fallbacks": True} if args.search_provider_order else None
+    SEARCH_THINKING = args.search_thinking
 
     SEARCHING_MODE = True
     search(args)

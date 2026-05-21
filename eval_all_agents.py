@@ -7,7 +7,7 @@ Evaluates the following agents on the SAME fresh held-out queries:
   3. Self-Refine (Reflexion)
   4. Best searched agent (highest median fitness from archive)
 
-Supports DATASET = "MATH" or "MMLU_PRO"
+Supports DATASET = "MATH", "MMLU_PRO", or "FullStack"
 
 Run:
     python eval_all_agents.py
@@ -36,7 +36,7 @@ _AFLOW_DIR = _ADAS_DIR.parent / "AFlow"
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION  ← change here
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET          = "MATH"   # "MATH"  or  "MMLU_PRO"
+DATASET          = "MATH"   # "MATH", "MMLU_PRO", or "FullStack"
 NUM_EVAL_QUERIES = 100      # held-out queries per subject / category
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
@@ -49,22 +49,38 @@ MATH_SUBJECTS = [
     "Precalculus",
     "Counting & Probability",
 ]
-MMLU_PRO_CATEGORIES = ["law", "history", "philosophy", "engineering"]
+MMLU_PRO_CATEGORIES = ["economics", "physics", "philosophy", "engineering"]
+FULLSTACK_SUBJECTS = [
+    "Advanced Programming",
+    "Scientific Computing",
+    "Data Analysis",
+    "Desktop and Web Development",
+]
 MATH_LEVEL = "Level 5"
 
-MATH_TRAIN_JSONL   = _ADAS_DIR / "dataset/math_4subjects.jsonl"
-MMLU_PRO_TRAIN_CSV = _ADAS_DIR / "dataset/mmlu_pro_4categories.csv"
-MATH_RAW_TEST_DIR  = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
-MMLU_PRO_HF_CACHE  = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
+MATH_TRAIN_JSONL        = _ADAS_DIR / "dataset/math_4subjects.jsonl"
+MMLU_PRO_TRAIN_CSV      = _ADAS_DIR / "dataset/mmlu_pro_4categories.csv"
+FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
+MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
+MMLU_PRO_HF_CACHE       = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
+FULLSTACK_HF_CACHE      = _AFLOW_DIR / "data/fullstack_hf_cache"
 
-MATH_ARCHIVE     = _ADAS_DIR / "results/math_ours_results_run_archive.json"
-MMLU_PRO_ARCHIVE = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
+SANDBOX_ENDPOINT        = os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
+SANDBOX_COMPILE_TIMEOUT = 50
+SANDBOX_RUN_TIMEOUT     = 50
+
+MATH_ARCHIVE      = _ADAS_DIR / "results/math_ours_results_run_archive.json"
+MMLU_PRO_ARCHIVE  = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
+FULLSTACK_ARCHIVE = _ADAS_DIR / "results/fullstack_ours_results_run_archive.json"
 
 # Baselines pulled from the initial archive entries
 BASELINE_NAMES = [
     "Chain-of-Thought",
     "Self-Consistency with Chain-of-Thought",
     "Self-Refine (Reflexion)",
+    "Step-back Abstraction",
+    "Dynamic Assignment of Roles",
+    "LLM Debate",
 ]
 
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
@@ -91,12 +107,13 @@ def find_best_agent(archive_path: Path) -> dict:
 
 
 def get_baseline_agents(archive_path: Path) -> List[dict]:
-    """Return initial-archive entries for BASELINE_NAMES, in that order."""
+    """Return initial-archive entries for the dataset-appropriate baseline names."""
+    names = FULLSTACK_BASELINE_NAMES if DATASET == "FullStack" else MATH_MMLU_BASELINE_NAMES
     with open(archive_path) as f:
         archive = json.load(f)
     initial = {a["name"]: a for a in archive if a.get("generation") == "initial"}
     selected = []
-    for name in BASELINE_NAMES:
+    for name in names:
         if name in initial:
             selected.append(initial[name])
         else:
@@ -110,11 +127,16 @@ def get_baseline_agents(archive_path: Path) -> List[dict]:
 
 def load_search_module(dataset: str):
     """
-    Dynamically load the correct search_ours module (_math or _mmlu_pro),
+    Dynamically load the correct search_ours module (_math, _mmlu_pro, or _fullstack),
     patch API globals, and return the module object.
     All agents share this single loaded module.
     """
-    subdir = "_math" if dataset == "MATH" else "_mmlu_pro"
+    if dataset == "MATH":
+        subdir = "_math"
+    elif dataset == "FullStack":
+        subdir = "_fullstack"
+    else:
+        subdir = "_mmlu_pro"
     module_dir = _ADAS_DIR / subdir
     sys.path.insert(0, str(module_dir))
     try:
@@ -261,6 +283,54 @@ def build_mmlu_pro_heldout(rng: random.Random) -> List[dict]:
     return records
 
 
+def load_fullstack_fingerprints() -> set:
+    fps = set()
+    with open(FULLSTACK_TRAIN_JSONL, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                fps.add(json.loads(line)["id"])
+    print(f"  FullStack training fingerprints: {len(fps)}")
+    return fps
+
+
+def build_fullstack_heldout(rng: random.Random) -> List[dict]:
+    fps = load_fullstack_fingerprints()
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    print("  Loading FullStackBench from HuggingFace cache ...")
+    ds = load_dataset(
+        "ByteDance/FullStackBench", "en", split="test",
+        cache_dir=str(FULLSTACK_HF_CACHE) if FULLSTACK_HF_CACHE.exists() else None,
+    )
+    test_split = list(ds)
+
+    records = []
+    for category in FULLSTACK_SUBJECTS:
+        pool = [
+            ex for ex in test_split
+            if ex["labels"].get("category") == category
+            and ex["labels"].get("difficulty") == "hard"
+            and ex["id"] not in fps
+        ]
+        n = min(NUM_EVAL_QUERIES, len(pool))
+        if n < NUM_EVAL_QUERIES:
+            print(f"  [warn] {category}: only {n} held-out available (requested {NUM_EVAL_QUERIES})")
+        for ex in rng.sample(pool, n):
+            records.append({
+                "id": ex["id"],
+                "content": ex["content"],
+                "category": ex["labels"]["category"],
+                "difficulty": ex["labels"]["difficulty"],
+                "programming_language": ex["labels"]["programming_language"],
+                "raw_example": dict(ex),
+            })
+        print(f"  {category}: {n} held-out queries")
+    return records
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Evaluation runners
 # ─────────────────────────────────────────────────────────────────────────────
@@ -306,6 +376,35 @@ def run_mmlu_pro_eval(agent_system, held_out: List[dict],
         pred_idx = _MMLU_PRO_L2I.get(letter, -1) if letter else -1
         buckets[categories[idx]].append(int(pred_idx == answers[idx]))
     return {c: (sum(v) / len(v) if v else 0.0) for c, v in buckets.items()}
+
+
+def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
+    from _fullstack.utils import format_task, score_fullstack
+    task_queue = [Info("task", "User", format_task(ex), -1) for ex in held_out]
+
+    from tqdm import tqdm
+    with ThreadPoolExecutor(max_workers=min(len(held_out), MAX_WORKERS)) as exe:
+        results = list(tqdm(exe.map(agent_system.forward, task_queue),
+                            total=len(task_queue), desc="  running"))
+
+    per_category: Dict[str, List[int]] = {s: [] for s in FULLSTACK_SUBJECTS}
+    for idx, res in enumerate(results):
+        try:
+            prediction = res.content if isinstance(res, Info) else str(res)
+            pass_rate = score_fullstack(
+                prediction=prediction,
+                raw_example=held_out[idx]["raw_example"],
+                sandbox_endpoint=SANDBOX_ENDPOINT,
+                compile_timeout=SANDBOX_COMPILE_TIMEOUT,
+                run_timeout=SANDBOX_RUN_TIMEOUT,
+            )
+            score = 1 if pass_rate >= 1.0 else 0
+        except Exception as e:
+            print(f"  Scoring error q{idx}: {e}")
+            score = 0
+        per_category[held_out[idx]["category"]].append(score)
+
+    return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_category.items()}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -373,8 +472,15 @@ def print_and_save(all_results: Dict[str, dict], subjects: List[str]):
 def main():
     os.chdir(_ADAS_DIR)
     rng = random.Random(SEED)
-    subjects     = MATH_SUBJECTS if DATASET == "MATH" else MMLU_PRO_CATEGORIES
-    archive_path = MATH_ARCHIVE  if DATASET == "MATH" else MMLU_PRO_ARCHIVE
+    if DATASET == "MATH":
+        subjects     = MATH_SUBJECTS
+        archive_path = MATH_ARCHIVE
+    elif DATASET == "FullStack":
+        subjects     = FULLSTACK_SUBJECTS
+        archive_path = FULLSTACK_ARCHIVE
+    else:
+        subjects     = MMLU_PRO_CATEGORIES
+        archive_path = MMLU_PRO_ARCHIVE
 
     print("=" * 70)
     print(f"ADAS COMPREHENSIVE HELD-OUT EVALUATION  —  {DATASET}")
@@ -385,16 +491,12 @@ def main():
     print("\nLoading search module …")
     mod = load_search_module(DATASET)
 
-    # 2. Collect agents: baselines first, then best searched
+    # 2. Collect agents: baselines only
     print("\nCollecting agents from archive …")
     agents_to_run: List[tuple] = []
 
     for entry in get_baseline_agents(archive_path):
         agents_to_run.append((entry["name"], entry["code"]))
-
-    best_entry = find_best_agent(archive_path)
-    label = f"Best-ADAS ({best_entry['name'][:20]})"
-    agents_to_run.append((label, best_entry["code"]))
 
     print(f"\nAgents to evaluate ({len(agents_to_run)}):")
     for name, _ in agents_to_run:
@@ -404,6 +506,8 @@ def main():
     print(f"\nBuilding held-out queries (seed={SEED}) …")
     if DATASET == "MATH":
         held_out = build_math_heldout(rng)
+    elif DATASET == "FullStack":
+        held_out = build_fullstack_heldout(rng)
     else:
         held_out = build_mmlu_pro_heldout(rng)
     print(f"Total held-out examples: {len(held_out)}")
@@ -418,6 +522,8 @@ def main():
 
         if DATASET == "MATH":
             per_subject = run_math_eval(agent_system, held_out, mod.score_math, mod.Info)
+        elif DATASET == "FullStack":
+            per_subject = run_fullstack_eval(agent_system, held_out)
         else:
             per_subject = run_mmlu_pro_eval(
                 agent_system, held_out,
