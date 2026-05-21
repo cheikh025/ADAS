@@ -13,14 +13,16 @@ Run:
     python eval_all_agents.py
 """
 
+import argparse
 import importlib.util
 import json
+import math
 import os
 import random
 import re
 import sys
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
@@ -36,10 +38,11 @@ _AFLOW_DIR = _ADAS_DIR.parent / "AFlow"
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION  ← change here
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET          = "MATH"   # "MATH", "MMLU_PRO", or "FullStack"
+DATASET          = "MMLU_PRO"   # "MATH", "MMLU_PRO", or "FullStack"
 NUM_EVAL_QUERIES = 100      # held-out queries per subject / category
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
+K_ROUND_EVAL     = 3        # evaluation rounds per agent (scores averaged, std reported)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 3 subjects — matches MAS_pro and AFlow for a fair comparison
@@ -78,8 +81,6 @@ BASELINE_NAMES = [
     "Chain-of-Thought",
     "Self-Consistency with Chain-of-Thought",
     "Self-Refine (Reflexion)",
-    "Step-back Abstraction",
-    "Dynamic Assignment of Roles",
     "LLM Debate",
 ]
 
@@ -141,7 +142,7 @@ def _read_exec_tokens(mod) -> int:
 # Module loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_search_module(dataset: str):
+def load_search_module(dataset: str, args):
     """
     Dynamically load the correct search_ours module (_math, _mmlu_pro, or _fullstack),
     patch API globals, and return the module object.
@@ -166,18 +167,14 @@ def load_search_module(dataset: str):
         sys.path.pop(0)
 
     import openai
-    mod.client = openai.OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.environ.get("OPENROUTER_API_KEY"),
-    )
-    mod.MODEL = "openai/gpt-4o-mini-2024-07-18"
-    mod.EVAL_TEMPERATURE = 1.0
+    mod.client = openai.OpenAI(base_url=args.base_url, api_key=args.api_key)
+    mod.MODEL = args.eval_model
+    mod.EVAL_TEMPERATURE = args.eval_temperature
     mod.SEARCH_TEMPERATURE = 0.8
     mod.MAX_TOKENS = 32768
-   # mod.PROVIDER_ROUTING = {
-   #     "order": ["Google Vertex", "Together", "Groq"],
-   #     "allow_fallbacks": True,
-   # }
+    mod.EXEC_MAX_TOKENS = args.exec_max_tokens
+    mod.EXEC_NO_THINKING = args.no_exec_thinking
+    mod.PROVIDER_ROUTING = {"order": [p.strip() for p in args.provider_order.split(",")], "allow_fallbacks": True} if args.provider_order else None
     mod.SEARCHING_MODE = True
     return mod
 
@@ -359,8 +356,17 @@ def run_math_eval(agent_system, held_out: List[dict], score_math, InfoCls=None) 
 
     from tqdm import tqdm
     with ThreadPoolExecutor(max_workers=min(len(held_out), MAX_WORKERS)) as exe:
-        results = list(tqdm(exe.map(agent_system.forward, task_queue),
-                            total=len(task_queue), desc="  running"))
+        future_to_idx = {exe.submit(agent_system.forward, task): i for i, task in enumerate(task_queue)}
+        results = [None] * len(task_queue)
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue), desc="  running"):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=180)
+                except Exception:
+                    results[idx] = None
+        except TimeoutError:
+            pass
 
     buckets: Dict[str, List[int]] = {s: [] for s in MATH_SUBJECTS}
     for idx, res in enumerate(results):
@@ -382,8 +388,17 @@ def run_mmlu_pro_eval(agent_system, held_out: List[dict],
 
     from tqdm import tqdm
     with ThreadPoolExecutor(max_workers=min(len(held_out), MAX_WORKERS)) as exe:
-        results = list(tqdm(exe.map(agent_system.forward, task_queue),
-                            total=len(task_queue), desc="  running"))
+        future_to_idx = {exe.submit(agent_system.forward, task): i for i, task in enumerate(task_queue)}
+        results = [None] * len(task_queue)
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue), desc="  running"):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=180)
+                except Exception:
+                    results[idx] = None
+        except TimeoutError:
+            pass
 
     buckets: Dict[str, List[int]] = {c: [] for c in MMLU_PRO_CATEGORIES}
     for idx, res in enumerate(results):
@@ -400,8 +415,17 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
 
     from tqdm import tqdm
     with ThreadPoolExecutor(max_workers=min(len(held_out), MAX_WORKERS)) as exe:
-        results = list(tqdm(exe.map(agent_system.forward, task_queue),
-                            total=len(task_queue), desc="  running"))
+        future_to_idx = {exe.submit(agent_system.forward, task): i for i, task in enumerate(task_queue)}
+        results = [None] * len(task_queue)
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue), desc="  running"):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=180)
+                except Exception:
+                    results[idx] = None
+        except TimeoutError:
+            pass
 
     per_category: Dict[str, List[int]] = {s: [] for s in FULLSTACK_SUBJECTS}
     for idx, res in enumerate(results):
@@ -427,9 +451,10 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
 # Results saving
 # ─────────────────────────────────────────────────────────────────────────────
 
-def print_and_save(all_results: Dict[str, dict], subjects: List[str],
-                   token_usage: Dict[str, float]):
+def print_and_save(all_results: Dict[str, dict], all_stds: Dict[str, dict],
+                   subjects: List[str], token_usage: Dict[str, float]):
     col_w = 36
+    cell_w = 22
     agent_names = list(all_results.keys())
 
     def _table(f=None):
@@ -441,27 +466,30 @@ def print_and_save(all_results: Dict[str, dict], subjects: List[str],
 
         w(f"  {'Subject/Category':<{col_w}}")
         for name in agent_names:
-            w(f"  {name[:16]:<16}")
-        w("\n  " + "-" * (col_w + 18 * len(agent_names)) + "\n")
+            w(f"  {name[:20]:<{cell_w}}")
+        w("\n  " + "-" * (col_w + (cell_w + 2) * len(agent_names)) + "\n")
         for s in subjects:
             w(f"  {s:<{col_w}}")
             for name in agent_names:
-                w(f"  {all_results[name].get(s, float('nan')):.4f}          ")
+                avg = all_results[name].get(s, float('nan'))
+                std = all_stds[name].get(s, 0.0)
+                w(f"  {avg:.3f}±{std:.3f}{'':>{cell_w - 11}}")
             w("\n")
         w("\n")
         w(f"  {'AVERAGE':<{col_w}}")
         for name in agent_names:
             avg = sum(all_results[name][s] for s in subjects) / len(subjects)
-            w(f"  {avg:.4f}          ")
+            std = math.sqrt(sum(all_stds[name][s] ** 2 for s in subjects)) / len(subjects)
+            w(f"  {avg:.3f}±{std:.3f}{'':>{cell_w - 11}}")
         w("\n\n")
         w(f"  {'avg_tokens/query':<{col_w}}")
         for name in agent_names:
-            w(f"  {token_usage.get(name, 0.0):<16.1f}")
+            w(f"  {token_usage.get(name, 0.0):<{cell_w}.1f}")
         w("\n")
 
     # console
     print("\n" + "=" * 70)
-    print(f"SUMMARY — {DATASET}")
+    print(f"SUMMARY — {DATASET}  [{K_ROUND_EVAL} rounds, mean ± std]")
     print("=" * 70)
     _table()
     print("=" * 70)
@@ -477,6 +505,7 @@ def print_and_save(all_results: Dict[str, dict], subjects: List[str],
         f.write(f"ADAS COMPREHENSIVE HELD-OUT EVALUATION — {DATASET}\n")
         f.write("=" * 70 + "\n")
         f.write(f"Queries/subject:   {NUM_EVAL_QUERIES}\n")
+        f.write(f"Eval rounds (k):   {K_ROUND_EVAL}\n")
         f.write(f"Sampling seed:     {SEED}\n")
         f.write(f"Date:              {timestamp}\n")
         f.write("-" * 70 + "\n\n")
@@ -490,7 +519,35 @@ def print_and_save(all_results: Dict[str, dict], subjects: List[str],
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--eval_model', type=str, default='deepseek/deepseek-v4-flash')
+    parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1')
+    parser.add_argument('--api_key', type=str, default=None)
+    parser.add_argument('--eval_temperature', type=float, default=1.0)
+    parser.add_argument('--exec_max_tokens', type=int, default=8600)
+    parser.add_argument('--provider_order', type=str, default="alibaba, deepseek ")
+    parser.add_argument('--no_exec_thinking', action='store_true', default=True)
+    args = parser.parse_args()
+    if args.api_key is None:
+        url = args.base_url.lower()
+        if "groq" in url:
+            args.api_key = os.environ.get("GROQ_API_KEY")
+        elif "openrouter" in url:
+            args.api_key = os.environ.get("OPENROUTER_API_KEY")
+        elif "openai" in url:
+            args.api_key = os.environ.get("OPENAI_API_KEY")
+        else:
+            args.api_key = (os.environ.get("OPENROUTER_API_KEY")
+                            or os.environ.get("GROQ_API_KEY")
+                            or os.environ.get("OPENAI_API_KEY"))
+    if not args.api_key:
+        raise ValueError("Provide --api_key or set OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY")
+    return args
+
+
 def main():
+    args = _parse_args()
     os.chdir(_ADAS_DIR)
     rng = random.Random(SEED)
     if DATASET == "MATH":
@@ -510,7 +567,7 @@ def main():
 
     # 1. Load module once — shared by all agents
     print("\nLoading search module …")
-    mod = load_search_module(DATASET)
+    mod = load_search_module(DATASET, args)
 
     # 2. Collect agents: baselines only
     print("\nCollecting agents from archive …")
@@ -533,41 +590,49 @@ def main():
         held_out = build_mmlu_pro_heldout(rng)
     print(f"Total held-out examples: {len(held_out)}")
 
-    # 4. Evaluate each agent on the same queries
+    # 4. Evaluate each agent on the same queries (K rounds)
     all_results: Dict[str, dict] = {}
+    all_stds: Dict[str, dict] = {}
     token_usage: Dict[str, float] = {}
     for agent_name, agent_code in agents_to_run:
         print(f"\n{'─' * 70}")
-        print(f"Agent: {agent_name}")
+        print(f"Agent: {agent_name}  [{K_ROUND_EVAL} rounds]")
         print(f"{'─' * 70}")
         agent_system = setup_forward(mod, agent_code)
 
-        _reset_exec_tokens(mod)
+        rounds = []
+        round_tokens_list = []
+        for k in range(K_ROUND_EVAL):
+            print(f"  Round {k + 1}/{K_ROUND_EVAL}")
+            _reset_exec_tokens(mod)
+            if DATASET == "MATH":
+                round_result = run_math_eval(agent_system, held_out, mod.score_math, mod.Info)
+            elif DATASET == "FullStack":
+                round_result = run_fullstack_eval(agent_system, held_out)
+            else:
+                round_result = run_mmlu_pro_eval(
+                    agent_system, held_out,
+                    mod.format_multichoice_question,
+                    mod.extract_answer,
+                    mod.Info,
+                )
+            round_tokens_list.append(_read_exec_tokens(mod))
+            rounds.append(round_result)
 
-        if DATASET == "MATH":
-            per_subject = run_math_eval(agent_system, held_out, mod.score_math, mod.Info)
-        elif DATASET == "FullStack":
-            per_subject = run_fullstack_eval(agent_system, held_out)
-        else:
-            per_subject = run_mmlu_pro_eval(
-                agent_system, held_out,
-                mod.format_multichoice_question,
-                mod.extract_answer,
-                mod.Info,
-            )
-
-        total_tokens = _read_exec_tokens(mod)
-        avg_tokens   = total_tokens / len(held_out) if held_out else 0.0
+        per_subject_avg = {s: sum(r[s] for r in rounds) / K_ROUND_EVAL for s in subjects}
+        per_subject_std = {s: math.sqrt(sum((r[s] - per_subject_avg[s]) ** 2 for r in rounds) / K_ROUND_EVAL) for s in subjects}
+        avg_tokens = sum(round_tokens_list) / (K_ROUND_EVAL * len(held_out)) if held_out else 0.0
         token_usage[agent_name] = avg_tokens
 
-        avg = sum(per_subject[s] for s in subjects) / len(subjects)
+        avg = sum(per_subject_avg[s] for s in subjects) / len(subjects)
         for s in subjects:
-            print(f"  {s:<35s}  {per_subject[s]:.4f}")
-        print(f"  {'AVERAGE':<35s}  {avg:.4f}  avg_tokens/query: {avg_tokens:.1f}")
-        all_results[agent_name] = per_subject
+            print(f"  {s:<35s}  {per_subject_avg[s]:.3f} ± {per_subject_std[s]:.3f}")
+        print(f"  {'AVERAGE':<35s}  {avg:.3f}  avg_tokens/query: {avg_tokens:.1f}")
+        all_results[agent_name] = per_subject_avg
+        all_stds[agent_name] = per_subject_std
 
     # 5. Print summary table + save
-    print_and_save(all_results, subjects, token_usage)
+    print_and_save(all_results, all_stds, subjects, token_usage)
 
 
 if __name__ == "__main__":

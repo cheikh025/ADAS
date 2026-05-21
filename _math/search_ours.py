@@ -121,7 +121,8 @@ def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
         _search_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = repair_json(content, return_objects=True)
-    assert json_dict is not None
+    if not isinstance(json_dict, dict):
+        json_dict = {}
     return json_dict
 
 
@@ -377,12 +378,15 @@ def evaluate_forward_fn(args, forward_str):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
         results = [None] * len(task_queue)
-        for future in tqdm(as_completed(future_to_idx, timeout=300), total=len(task_queue)):
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result(timeout=180)
-            except Exception:
-                results[idx] = None
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue)):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=180)
+                except Exception:
+                    results[idx] = None
+        except TimeoutError:
+            pass
 
     acc_list = []
     for q_idx, res in enumerate(results):

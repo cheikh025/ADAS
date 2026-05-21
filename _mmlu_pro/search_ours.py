@@ -148,6 +148,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         temperature=EVAL_TEMPERATURE if temperature is None else temperature,
         max_tokens=EXEC_MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
+        timeout=120,
     )
     if response.usage:
         with _exec_token_lock:

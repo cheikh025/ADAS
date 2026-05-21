@@ -20,7 +20,7 @@ import os
 import random
 import threading
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import backoff
 import numpy as np
@@ -86,6 +86,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         temperature=EVAL_TEMPERATURE if temperature is None else temperature,
         max_tokens=EXEC_MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
+        timeout=120,
     )
     if response.usage:
         with _exec_token_lock:
@@ -118,13 +119,15 @@ def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
         temperature=SEARCH_TEMPERATURE if temperature is None else temperature,
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
+        timeout=120,
     )
     if response.usage:
         _search_input_tokens  += response.usage.prompt_tokens
         _search_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = repair_json(content, return_objects=True)
-    assert json_dict is not None
+    if not isinstance(json_dict, dict):
+        json_dict = {}
     return json_dict
 
 
@@ -362,14 +365,18 @@ def evaluate_forward_fn(args, forward_str):
     task_queue = [Info('task', 'User', format_task(ex), -1) for ex in examples]
     agentSystem = AgentSystem()
 
-    def safe_forward(task):
-        try:
-            return agentSystem.forward(task)
-        except Exception:
-            return None
-
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(tqdm(executor.map(safe_forward, task_queue), total=len(task_queue)))
+        future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
+        results = [None] * len(task_queue)
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue)):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=180)
+                except Exception:
+                    results[idx] = None
+        except TimeoutError:
+            pass
 
     acc_list = []
     for q_idx, res in enumerate(results):
