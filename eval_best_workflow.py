@@ -97,9 +97,8 @@ MMLU_PRO_ARCHIVE  = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
 FULLSTACK_ARCHIVE = _ADAS_DIR / "results/fullstack_ours_results_run_archive.json"
 
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
-LETTER_TO_INDEX     = {"A": 0, "B": 1, "C": 2, "D": 3}
-MMLU_PRO_LETTERS    = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
-MMLU_PRO_LETTER_TO_INDEX = {l: i for i, l in enumerate(MMLU_PRO_LETTERS)}
+LETTER_TO_INDEX  = {"A": 0, "B": 1, "C": 2, "D": 3}
+MMLU_PRO_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -343,14 +342,12 @@ def build_mmlu_pro_heldout(rng: random.Random) -> List[dict]:
         sampled = rng.sample(pool, n)
         for r in sampled:
             options = list(r["options"])
-            formatted = "\n".join(f"{MMLU_PRO_LETTERS[i]}) {opt}" for i, opt in enumerate(options))
-            records.append({
-                "question": r["question"],
-                "options": options,
-                "formatted_choices": formatted,
-                "answer": str(r["answer"]).upper(),
-                "subject": category,
-            })
+            while len(options) < 10:
+                options.append("")
+            row = {"Question": r["question"], "Answer": str(r["answer"]).upper(), "Category": category}
+            for i, letter in enumerate(MMLU_PRO_LETTERS):
+                row[letter] = options[i]
+            records.append(row)
         print(f"  {category}: {n} held-out queries")
     return records
 
@@ -463,41 +460,6 @@ def run_mmlu_eval(agent_system, held_out: List[dict], format_q_fn) -> Dict[str, 
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_subject.items()}
 
 
-def _extract_mmlu_pro_prediction(res) -> int:
-    """
-    Extract predicted choice index (0-9) from agent output.
-    Mirrors the original ADAS extraction logic (evaluate_forward_fn) but extended to A-J.
-    Agent forward() typically returns a list of Info namedtuples: [thinking, answer, ...]
-    """
-    def _from_str(s: str) -> int:
-        s = s.strip()
-        if s in MMLU_PRO_LETTER_TO_INDEX:
-            return MMLU_PRO_LETTER_TO_INDEX[s]
-        for letter in MMLU_PRO_LETTERS:
-            if f"{letter})" in s or f"({letter})" in s:
-                return MMLU_PRO_LETTER_TO_INDEX[letter]
-        return -1
-
-    try:
-        if isinstance(res, list):
-            # Most agents: [thinking_Info, answer_Info] — answer at index 1
-            if len(res) > 1:
-                idx = _from_str(str(res[1].content))
-                if idx != -1:
-                    return idx
-            # Fallback: scan all Info items for a single-letter content
-            for item in res:
-                if isinstance(item, Info):
-                    c = str(item.content).strip()
-                    if c in MMLU_PRO_LETTER_TO_INDEX:
-                        return MMLU_PRO_LETTER_TO_INDEX[c]
-        elif hasattr(res, "content"):
-            return _from_str(str(res.content))
-        else:
-            return _from_str(str(res))
-    except Exception:
-        pass
-    return -1
 
 
 def run_math_eval(agent_system, score_math_fn, held_out: List[dict]) -> Dict[str, float]:
@@ -532,14 +494,11 @@ def run_math_eval(agent_system, score_math_fn, held_out: List[dict]) -> Dict[str
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in buckets.items()}
 
 
-def run_mmlu_pro_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
-    def _format_q(ex):
-        return f"{ex['question']}\n{ex['formatted_choices']}"
-
-    questions = [_format_q(ex) for ex in held_out]
-    answers   = [MMLU_PRO_LETTER_TO_INDEX.get(ex["answer"], -1) for ex in held_out]
-    subjects  = [ex["subject"] for ex in held_out]
-    task_queue = [Info("task", "User", q, -1) for q in questions]
+def run_mmlu_pro_eval(agent_system, held_out: List[dict], mod) -> Dict[str, float]:
+    questions  = [mod.format_multichoice_question(ex) for ex in held_out]
+    answers    = [mod.LETTER_TO_INDEX.get(ex["Answer"], -1) for ex in held_out]
+    categories = [ex["Category"] for ex in held_out]
+    task_queue = [mod.Info("task", "User", q, -1) for q in questions]
 
     workers = min(len(held_out), MAX_WORKERS)
     from tqdm import tqdm
@@ -558,9 +517,18 @@ def run_mmlu_pro_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
 
     per_subject: Dict[str, List[int]] = {s: [] for s in MMLU_PRO_SUBJECTS}
     for idx, res in enumerate(results):
-        pred_idx = _extract_mmlu_pro_prediction(res)
+        try:
+            pred = mod.extract_answer(res)
+            if pred is None and isinstance(res, list):
+                for elem in res:
+                    pred = mod.extract_answer(elem)
+                    if pred is not None:
+                        break
+            pred_idx = mod.LETTER_TO_INDEX.get(pred, -1) if pred is not None else -1
+        except Exception:
+            pred_idx = -1
         correct = int(pred_idx == answers[idx])
-        per_subject[subjects[idx]].append(correct)
+        per_subject[categories[idx]].append(correct)
 
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_subject.items()}
 
@@ -767,7 +735,7 @@ def main():
         if DATASET == "MATH":
             round_result = run_math_eval(agent_system, mod.score_math, held_out)
         elif DATASET == "MMLUPro":
-            round_result = run_mmlu_pro_eval(agent_system, held_out)
+            round_result = run_mmlu_pro_eval(agent_system, held_out, mod)
         elif DATASET == "FullStack":
             round_result = run_fullstack_eval(agent_system, held_out)
         else:
