@@ -11,20 +11,19 @@ Usage:
 """
 
 import argparse
+import asyncio
 import copy
 import json
 import os
 import random
-import threading
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import backoff
 import numpy as np
 import openai
 from dotenv import load_dotenv
 from json_repair import repair_json
-from tqdm import tqdm
+from tqdm.asyncio import tqdm as atqdm
 from typing import Union
 
 # ── Token tracking ────────────────────────────────────────────────────────────
@@ -33,7 +32,6 @@ _search_output_tokens = 0
 _exec_input_tokens = 0
 _exec_output_tokens = 0
 _total_questions_evaluated = 0
-_exec_token_lock = threading.Lock()
 
 load_dotenv(override=False)  # don't override already-set env vars
 
@@ -60,19 +58,19 @@ SEARCH_PROVIDER_ROUTING = None
 SEARCH_THINKING = None
 
 
-def make_client(base_url: str, api_key: str) -> openai.OpenAI:
-    return openai.OpenAI(base_url=base_url, api_key=api_key)
+def make_client(base_url: str, api_key: str) -> openai.AsyncOpenAI:
+    return openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
-def get_json_response_from_gpt(msg, model, system_message, temperature=None):
+async def get_json_response_from_gpt(msg, model, system_message, temperature=None):
     global _exec_input_tokens, _exec_output_tokens
     extra = {}
     if PROVIDER_ROUTING:
         extra["provider"] = PROVIDER_ROUTING
     if EXEC_NO_THINKING:
         extra["reasoning"] = {"effort": "none"}
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system_message},
@@ -84,9 +82,8 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         timeout=60,
     )
     if response.usage:
-        with _exec_token_lock:
-            _exec_input_tokens += response.usage.prompt_tokens
-            _exec_output_tokens += response.usage.completion_tokens
+        _exec_input_tokens += response.usage.prompt_tokens
+        _exec_output_tokens += response.usage.completion_tokens
     content = response.choices[0].message.content
     json_dict = json.loads(content)
     assert json_dict is not None
@@ -94,14 +91,14 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
 
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
-def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
+async def get_json_response_from_gpt_reflect(msg_list, model, temperature=None):
     global _search_input_tokens, _search_output_tokens
     extra = {}
     if SEARCH_PROVIDER_ROUTING:
         extra["provider"] = SEARCH_PROVIDER_ROUTING
     if SEARCH_THINKING is not None:
         extra["reasoning"] = {"effort": SEARCH_THINKING}
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=model,
         messages=msg_list,
         temperature=SEARCH_TEMPERATURE if temperature is None else temperature,
@@ -150,11 +147,11 @@ class LLMAgentBase():
                 input_infos_text += f'### {field_name} by {author}:\n{content}\n\n'
         return system_prompt, input_infos_text + instruction
 
-    def query(self, input_infos: list, instruction, iteration_idx=-1) -> dict:
+    async def query(self, input_infos: list, instruction, iteration_idx=-1) -> dict:
         system_prompt, prompt = self.generate_prompt(input_infos, instruction)
         try:
             response_json = {}
-            response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
+            response_json = await get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
             assert len(response_json) == len(self.output_fields), "not returning enough fields"
         except Exception as e:
             if "maximum context length" in str(e) and SEARCHING_MODE:
@@ -174,8 +171,8 @@ class LLMAgentBase():
     def __repr__(self):
         return f"{self.agent_name} {self.id}"
 
-    def __call__(self, input_infos: list, instruction, iteration_idx=-1):
-        return self.query(input_infos, instruction, iteration_idx=iteration_idx)
+    async def __call__(self, input_infos: list, instruction, iteration_idx=-1):
+        return await self.query(input_infos, instruction, iteration_idx=iteration_idx)
 
 
 class AgentSystem():
@@ -183,7 +180,7 @@ class AgentSystem():
         pass
 
 
-def search(args):
+async def search(args):
     file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
     if os.path.exists(file_path):
         with open(file_path, 'r') as f:
@@ -199,7 +196,7 @@ def search(args):
         solution['generation'] = "initial"
         print(f"============Initial Archive: {solution['name']}=================")
         try:
-            acc_list = evaluate_forward_fn(args, solution["code"])
+            acc_list = await evaluate_forward_fn(args, solution["code"])
         except Exception as e:
             print("During evaluating initial archive:", e)
             continue
@@ -220,14 +217,14 @@ def search(args):
             {"role": "user", "content": prompt},
         ]
         try:
-            next_solution = get_json_response_from_gpt_reflect(msg_list, args.search_model)
+            next_solution = await get_json_response_from_gpt_reflect(msg_list, args.search_model)
             r1, r2 = get_reflexion_prompt(archive[-1] if n > 0 else None)
             msg_list.append({"role": "assistant", "content": str(next_solution)})
             msg_list.append({"role": "user", "content": r1})
-            next_solution = get_json_response_from_gpt_reflect(msg_list, args.search_model)
+            next_solution = await get_json_response_from_gpt_reflect(msg_list, args.search_model)
             msg_list.append({"role": "assistant", "content": str(next_solution)})
             msg_list.append({"role": "user", "content": r2})
-            next_solution = get_json_response_from_gpt_reflect(msg_list, args.search_model)
+            next_solution = await get_json_response_from_gpt_reflect(msg_list, args.search_model)
         except Exception as e:
             print("During LLM generate new solution:", e)
             n -= 1
@@ -236,7 +233,7 @@ def search(args):
         acc_list = []
         for _ in range(args.debug_max):
             try:
-                acc_list = evaluate_forward_fn(args, next_solution["code"])
+                acc_list = await evaluate_forward_fn(args, next_solution["code"])
                 if np.mean(acc_list) < 0.01 and SEARCHING_MODE:
                     raise Exception("All 0 accuracy")
                 break
@@ -245,7 +242,7 @@ def search(args):
                 msg_list.append({"role": "assistant", "content": str(next_solution)})
                 msg_list.append({"role": "user", "content": f"Error during evaluation:\n{e}\nDebug and fix the code. Repeat your 'thought' and put debugging notes in 'debug_thought'."})
                 try:
-                    next_solution = get_json_response_from_gpt_reflect(msg_list, args.search_model)
+                    next_solution = await get_json_response_from_gpt_reflect(msg_list, args.search_model)
                 except Exception as e:
                     print("During LLM debug:", e)
         if not acc_list:
@@ -266,7 +263,6 @@ def search(args):
 
 
 def log_token_usage(save_dir: str, expr_name: str):
-    """Log token usage summary to console and a JSON file."""
     search_total = _search_input_tokens + _search_output_tokens
     exec_total = _exec_input_tokens + _exec_output_tokens
     avg_exec_per_question = (
@@ -303,7 +299,7 @@ def log_token_usage(save_dir: str, expr_name: str):
     print(f"Token usage report saved to: {report_path}")
 
 
-def evaluate(args):
+async def evaluate(args):
     file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
     eval_file_path = file_path.replace(".json", "_evaluate.json")
     with open(file_path, 'r') as f:
@@ -324,7 +320,7 @@ def evaluate(args):
         print(f"current_gen: {sol['generation']}, current_idx: {current_idx}")
         current_idx += 1
         try:
-            acc_list = evaluate_forward_fn(args, sol["code"])
+            acc_list = await evaluate_forward_fn(args, sol["code"])
         except Exception as e:
             print(e)
             continue
@@ -335,7 +331,7 @@ def evaluate(args):
             json.dump(eval_archive, f, indent=4)
 
 
-def evaluate_forward_fn(args, forward_str):
+async def evaluate_forward_fn(args, forward_str):
     namespace = {}
     exec(forward_str, globals(), namespace)
     names = list(namespace.keys())
@@ -366,15 +362,16 @@ def evaluate_forward_fn(args, forward_str):
     task_queue = [Info('task', 'User', q, -1) for q in questions]
     agentSystem = AgentSystem()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
-        results = [None] * len(task_queue)
-        for future in tqdm(as_completed(future_to_idx, timeout=300), total=len(task_queue)):
-            idx = future_to_idx[future]
+    sem = asyncio.Semaphore(max_workers)
+
+    async def run_one(task):
+        async with sem:
             try:
-                results[idx] = future.result(timeout=180)
+                return await asyncio.wait_for(agentSystem.forward(task), timeout=180)
             except Exception:
-                results[idx] = None
+                return None
+
+    results = await atqdm.gather(*[run_one(task) for task in task_queue], total=len(task_queue))
 
     acc_list = []
     for q_idx, res in enumerate(results):
@@ -388,6 +385,15 @@ def evaluate_forward_fn(args, forward_str):
 
     print(f"acc: {bootstrap_confidence_interval(acc_list)}")
     return acc_list
+
+
+async def main(args):
+    global SEARCHING_MODE
+    SEARCHING_MODE = True
+    await search(args)
+    if args.test_size > 0:
+        SEARCHING_MODE = False
+        await evaluate(args)
 
 
 if __name__ == "__main__":
@@ -459,9 +465,4 @@ if __name__ == "__main__":
     SEARCH_PROVIDER_ROUTING = {"order": [p.strip() for p in args.search_provider_order.split(",")], "allow_fallbacks": True} if args.search_provider_order else None
     SEARCH_THINKING = args.search_thinking
 
-    SEARCHING_MODE = True
-    search(args)
-
-    if args.test_size > 0:
-        SEARCHING_MODE = False
-        evaluate(args)
+    asyncio.run(main(args))
