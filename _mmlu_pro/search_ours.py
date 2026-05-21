@@ -464,12 +464,15 @@ def evaluate_forward_fn(args, forward_str):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
         results = [None] * len(task_queue)
-        for future in tqdm(as_completed(future_to_idx, timeout=300), total=len(task_queue)):
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result(timeout=180)
-            except Exception:
-                results[idx] = None
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue)):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result(timeout=180)
+                except Exception:
+                    results[idx] = None
+        except TimeoutError:
+            pass
 
     for q_idx, res in enumerate(results):
         try:
