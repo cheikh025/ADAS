@@ -122,6 +122,22 @@ def get_baseline_agents(archive_path: Path) -> List[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Token tracking helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _reset_exec_tokens(mod) -> None:
+    if hasattr(mod, '_exec_input_tokens'):
+        mod._exec_input_tokens  = 0
+        mod._exec_output_tokens = 0
+
+
+def _read_exec_tokens(mod) -> int:
+    if hasattr(mod, '_exec_input_tokens'):
+        return mod._exec_input_tokens + mod._exec_output_tokens
+    return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Module loading
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -411,7 +427,8 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
 # Results saving
 # ─────────────────────────────────────────────────────────────────────────────
 
-def print_and_save(all_results: Dict[str, dict], subjects: List[str]):
+def print_and_save(all_results: Dict[str, dict], subjects: List[str],
+                   token_usage: Dict[str, float]):
     col_w = 36
     agent_names = list(all_results.keys())
 
@@ -436,6 +453,10 @@ def print_and_save(all_results: Dict[str, dict], subjects: List[str]):
         for name in agent_names:
             avg = sum(all_results[name][s] for s in subjects) / len(subjects)
             w(f"  {avg:.4f}          ")
+        w("\n\n")
+        w(f"  {'avg_tokens/query':<{col_w}}")
+        for name in agent_names:
+            w(f"  {token_usage.get(name, 0.0):<16.1f}")
         w("\n")
 
     # console
@@ -514,11 +535,14 @@ def main():
 
     # 4. Evaluate each agent on the same queries
     all_results: Dict[str, dict] = {}
+    token_usage: Dict[str, float] = {}
     for agent_name, agent_code in agents_to_run:
         print(f"\n{'─' * 70}")
         print(f"Agent: {agent_name}")
         print(f"{'─' * 70}")
         agent_system = setup_forward(mod, agent_code)
+
+        _reset_exec_tokens(mod)
 
         if DATASET == "MATH":
             per_subject = run_math_eval(agent_system, held_out, mod.score_math, mod.Info)
@@ -532,14 +556,18 @@ def main():
                 mod.Info,
             )
 
+        total_tokens = _read_exec_tokens(mod)
+        avg_tokens   = total_tokens / len(held_out) if held_out else 0.0
+        token_usage[agent_name] = avg_tokens
+
         avg = sum(per_subject[s] for s in subjects) / len(subjects)
         for s in subjects:
             print(f"  {s:<35s}  {per_subject[s]:.4f}")
-        print(f"  {'AVERAGE':<35s}  {avg:.4f}")
+        print(f"  {'AVERAGE':<35s}  {avg:.4f}  avg_tokens/query: {avg_tokens:.1f}")
         all_results[agent_name] = per_subject
 
     # 5. Print summary table + save
-    print_and_save(all_results, subjects)
+    print_and_save(all_results, subjects, token_usage)
 
 
 if __name__ == "__main__":
