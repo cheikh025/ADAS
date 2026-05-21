@@ -3,7 +3,7 @@ import json
 EXAMPLE = {
     "thought": "**Insights:**\nYour insights on what should be the next interesting agent.\n**Overall Idea:**\nyour reasoning and the overall concept behind the agent design.\n**Implementation:**\ndescribe the implementation step by step.",
     "name": "Name of your proposed agent",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     # Your code here
     return answer
 """
@@ -12,10 +12,10 @@ EXAMPLE = {
 COT = {
     "thought": "By encouraging the LLM to think step by step rather than directly outputting an answer, chain-of-thought reasoning enables complex problem-solving through intermediate steps.",
     "name": "Chain-of-Thought",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     cot_instruction = "Please think step by step and then solve the task. Put your final answer in \\\\boxed{...}."
     cot_agent = LLMAgentBase(['thinking', 'answer'], 'Chain-of-Thought Agent')
-    thinking, answer = await cot_agent([taskInfo], cot_instruction)
+    thinking, answer = cot_agent([taskInfo], cot_instruction)
     return answer
 """
 }
@@ -23,7 +23,7 @@ COT = {
 COT_SC = {
     "thought": "Multiple CoT agents with majority voting to improve reliability.",
     "name": "Self-Consistency with Chain-of-Thought",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     cot_instruction = "Please think step by step and then solve the task. Put your final answer in \\\\boxed{...}."
     N = 5
     cot_agents = [LLMAgentBase(['thinking', 'answer'], 'Chain-of-Thought Agent', temperature=0.8) for _ in range(N)]
@@ -34,7 +34,7 @@ COT_SC = {
 
     possible_answers = []
     for i in range(N):
-        thinking, answer = await cot_agents[i]([taskInfo], cot_instruction)
+        thinking, answer = cot_agents[i]([taskInfo], cot_instruction)
         possible_answers.append(answer.content)
 
     answer = majority_voting(possible_answers)
@@ -45,7 +45,7 @@ COT_SC = {
 Reflexion = {
     "thought": "An iterative refinement approach where the agent reflects on its own previous answer and improves it.",
     "name": "Self-Refine (Reflexion)",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     cot_initial_instruction = "Please think step by step and then solve the math problem. Put your final answer in \\\\boxed{...}."
     cot_reflect_instruction = "Given previous attempts and feedback, carefully consider where you could go wrong in your latest attempt. Using insights from previous attempts, try to solve the math problem better. Put your final answer in \\\\boxed{...}."
     cot_agent = LLMAgentBase(['thinking', 'answer'], 'Chain-of-Thought Agent')
@@ -56,14 +56,14 @@ Reflexion = {
     N_max = 5
 
     cot_inputs = [taskInfo]
-    thinking, answer = await cot_agent(cot_inputs, cot_initial_instruction, 0)
+    thinking, answer = cot_agent(cot_inputs, cot_initial_instruction, 0)
 
     for i in range(N_max):
-        feedback, correct = await critic_agent([taskInfo, thinking, answer], critic_instruction, i)
+        feedback, correct = critic_agent([taskInfo, thinking, answer], critic_instruction, i)
         if correct.content == 'True':
             break
         cot_inputs.extend([thinking, answer, feedback])
-        thinking, answer = await cot_agent(cot_inputs, cot_reflect_instruction, i + 1)
+        thinking, answer = cot_agent(cot_inputs, cot_reflect_instruction, i + 1)
     return answer
 """
 }
@@ -71,7 +71,7 @@ Reflexion = {
 LLM_debate = {
     "thought": "Multiple agents debate the solution, then a judge selects the best answer.",
     "name": "LLM Debate",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     debate_initial_instruction = "Please think step by step and then solve the math problem. Put your answer in \\\\boxed{...}."
     debate_instruction = "Given solutions to the problem from other agents, consider their opinions as additional advice. Please think carefully and provide an updated answer. Put your final answer in \\\\boxed{...}."
 
@@ -87,14 +87,14 @@ LLM_debate = {
     for r in range(max_round):
         for i in range(len(debate_agents)):
             if r == 0:
-                thinking, answer = await debate_agents[i]([taskInfo], debate_initial_instruction)
+                thinking, answer = debate_agents[i]([taskInfo], debate_initial_instruction)
             else:
                 input_infos = [taskInfo] + [all_thinking[r-1][i]] + all_thinking[r-1][:i] + all_thinking[r-1][i+1:]
-                thinking, answer = await debate_agents[i](input_infos, debate_instruction)
+                thinking, answer = debate_agents[i](input_infos, debate_instruction)
             all_thinking[r].append(thinking)
             all_answer[r].append(answer)
 
-    thinking, answer = await final_decision_agent([taskInfo] + all_thinking[max_round-1] + all_answer[max_round-1], final_decision_instruction)
+    thinking, answer = final_decision_agent([taskInfo] + all_thinking[max_round-1] + all_answer[max_round-1], final_decision_instruction)
     return answer
 """
 }
@@ -102,14 +102,14 @@ LLM_debate = {
 Take_a_step_back = {
     "thought": "First derive the general principle or formula, then apply it to solve the specific problem.",
     "name": "Step-back Abstraction",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     principle_instruction = "What is the general mathematical principle, theorem, or formula needed to solve this type of problem? Do not solve it yet."
     principle_agent = LLMAgentBase(['thinking', 'principle'], 'Principle Agent')
-    thinking, principle = await principle_agent([taskInfo], principle_instruction)
+    thinking, principle = principle_agent([taskInfo], principle_instruction)
 
     solve_instruction = "Using the principle identified, solve the math problem step by step. Put your final answer in \\\\boxed{...}."
     solve_agent = LLMAgentBase(['thinking', 'answer'], 'Solver Agent')
-    thinking, answer = await solve_agent([taskInfo, principle], solve_instruction)
+    thinking, answer = solve_agent([taskInfo, principle], solve_instruction)
     return answer
 """
 }
@@ -117,7 +117,7 @@ Take_a_step_back = {
 QD = {
     "thought": "Similar to Quality-Diversity methods, let LLM generate multiple diverse interesting solutions could help. By encouraging the model to explore different reasoning paths, we can increase the chances of finding the best solution.",
     "name": "Quality-Diversity",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
     cot_initial_instruction = "Please think step by step and then solve the math problem. Put your final answer in \\\\boxed{...}."
     qd_instruction = "Given previous attempts, try to come up with another interesting way to solve the math problem. Put your final answer in \\\\boxed{...}."
     cot_agent = LLMAgentBase(['thinking', 'answer'], 'Chain-of-Thought Agent')
@@ -129,15 +129,15 @@ QD = {
 
     cot_inputs = [taskInfo]
     possible_answers = []
-    thinking, answer = await cot_agent(cot_inputs, cot_initial_instruction, 0)
+    thinking, answer = cot_agent(cot_inputs, cot_initial_instruction, 0)
     possible_answers.extend([thinking, answer])
 
     for i in range(N_max):
         cot_inputs.extend([thinking, answer])
-        thinking, answer = await cot_agent(cot_inputs, qd_instruction, i + 1)
+        thinking, answer = cot_agent(cot_inputs, qd_instruction, i + 1)
         possible_answers.extend([thinking, answer])
 
-    thinking, answer = await final_decision_agent([taskInfo] + possible_answers, final_decision_instruction)
+    thinking, answer = final_decision_agent([taskInfo] + possible_answers, final_decision_instruction)
     return answer
 """
 }
@@ -145,14 +145,14 @@ QD = {
 Role_Assignment = {
     "thought": "Similar to Auto-GPT and expert prompting, we can use dynamic control flow in the design to let the agent decide what expert we should use.",
     "name": "Dynamic Assignment of Roles",
-    "code": """async def forward(self, taskInfo):
+    "code": """def forward(self, taskInfo):
         cot_instruction = "Please think step by step and then solve the math problem. Put your final answer in \\\\boxed{...}."
         expert_agents = [LLMAgentBase(['thinking', 'answer'], 'Expert Agent', role=role) for role in ['Number Theory Expert', 'Algebra and Precalculus Expert', 'Combinatorics Expert', 'Geometry Expert', 'Math Generalist']]
 
         routing_instruction = "Given the math problem, please choose an Expert to answer the question. Choose from: Number Theory, Algebra and Precalculus, Combinatorics, Geometry Expert, or Math Generalist."
         routing_agent = LLMAgentBase(['choice'], 'Routing Agent')
 
-        choice = (await routing_agent([taskInfo], routing_instruction))[0]
+        choice = routing_agent([taskInfo], routing_instruction)[0]
 
         if 'number theory' in choice.content.lower():
             expert_id = 0
@@ -165,7 +165,7 @@ Role_Assignment = {
         else:
             expert_id = 4
 
-        thinking, answer = await expert_agents[expert_id]([taskInfo], cot_instruction)
+        thinking, answer = expert_agents[expert_id]([taskInfo], cot_instruction)
         return answer
 """
 }
@@ -194,8 +194,8 @@ import openai
 import backoff
 from utils import random_id
 
-# Initialize the OpenAI async client
-client = openai.AsyncOpenAI()
+# Initialize the OpenAI client
+client = openai.OpenAI()
 
 # Named tuple for holding task information
 Info = namedtuple('Info', ['name', 'author', 'content', 'iteration_idx'])
@@ -207,8 +207,8 @@ FORMAT_INST = lambda request_keys: f"Reply EXACTLY with the following JSON forma
 ROLE_DESC = lambda role: f"You are a {role}."
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
-async def get_json_response_from_gpt(msg, model, system_message, temperature=0.5):
-    response = await client.chat.completions.create(
+def get_json_response_from_gpt(msg, model, system_message, temperature=0.5):
+    response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system_message},
@@ -256,9 +256,9 @@ class LLMAgentBase:
         prompt = input_infos_text + instruction
         return system_prompt, prompt
 
-    async def query(self, input_infos: list, instruction, iteration_idx=-1) -> list:
+    def query(self, input_infos: list, instruction, iteration_idx=-1) -> list[Info]:
         system_prompt, prompt = self.generate_prompt(input_infos, instruction)
-        response_json = await get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
+        response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
         output_infos = []
         for key, value in response_json.items():
             info = Info(key, self.__repr__(), value, iteration_idx)
@@ -268,13 +268,13 @@ class LLMAgentBase:
     def __repr__(self):
         return f"{self.agent_name} {self.id}"
 
-    async def __call__(self, input_infos: list, instruction, iteration_idx=-1):
+    def __call__(self, input_infos: list, instruction, iteration_idx=-1):
         # The output of the LLM is a list of Info. If you are only querying one output, you should access it with [0].
         # It is a good practice to always include 'thinking' in the output.
-        return await self.query(input_infos, instruction, iteration_idx=iteration_idx)
+        return self.query(input_infos, instruction, iteration_idx=iteration_idx)
 
 class AgentArchitecture:
-    async def forward(self, taskInfo):
+    def forward(self, taskInfo) -> Union[Info, str]:
         pass
 ```
 
@@ -302,7 +302,7 @@ DO NOT FORGET the taskInfo input to LLM if you think it is needed, otherwise LLM
 Here are some mistakes you may make:
 
 1. This is WRONG: ```
-feedback, correct = await critic_agent([taskInfo, thinking, answer], critic_instruction, i)
+feedback, correct = critic_agent([taskInfo, thinking, answer], critic_instruction, i)
 feedback_info = verifier_agent([taskInfo, Info('feedback', 'Critic Agent', thinking, 0)], verification_instruction)
 ```
 It is wrong to use "Info('feedback', 'Critic Agent', thinking, 0)". The returned "feedback" from LLMAgentBase is already Info.
@@ -321,7 +321,7 @@ Lastly, DO NOT CREATE Info object by yourself.
 all_thinking = []
 all_answers = []
 for agent in agents:
-    outputs = await agent([taskInfo], instruction)
+    outputs = agent([taskInfo], instruction)
     all_thinking.append(outputs[0].content)
     all_answers.append(outputs[1].content)
 aggregated = '\\n'.join(all_answers)
@@ -330,7 +330,7 @@ You SHOULD NOT extract the content from the Info object by yourself. You should 
 
 4. This is WRONG: ```
 reasoning_agent = LLMAgentBase(['thinking', 'answer'], 'Reasoning Agent')
-response_infos = await reasoning_agent([taskInfo], reasoning_instruction)
+response_infos = reasoning_agent([taskInfo], reasoning_instruction)
 for info in response_infos:
     if info.name == 'final_answer':
         return info
@@ -339,7 +339,7 @@ return Info('answer', 'Final Decision Agent', 'No answer generated.', 0)
 You should not extract the final answer by yourself. You SHOULD directly unpack and return the answer Info.
 CORRECT example: ```
 reasoning_agent = LLMAgentBase(['thinking', 'answer'], 'Reasoning Agent')
-thinking, answer = await reasoning_agent([taskInfo], reasoning_instruction)
+thinking, answer = reasoning_agent([taskInfo], reasoning_instruction)
 return answer
 ```
 
@@ -347,16 +347,16 @@ return answer
 import sympy as sp
 import re
 
-async def forward(self, taskInfo):
+def forward(self, taskInfo):
     ...
 ```
 Do NOT add any import statements or top-level code outside the forward() function body. All necessary imports (json, collections, etc.) are already available. If you need collections.Counter, import it inside the function as shown in the archive examples.
 
 6. This is WRONG: ```
-async def forward(self, taskInfo) -> Union[Info, str]:
+def forward(self, taskInfo) -> Union[Info, str]:
     ...
 ```
-Do NOT use return type annotations that require imports. Just write `async def forward(self, taskInfo):` with no return type hint.
+Do NOT use return type annotations that require imports. Just write `def forward(self, taskInfo):` with no return type hint.
 
 # Your task
 You are deeply familiar with LLM prompting techniques and LLM agent works from the literature. Your goal is to maximize "fitness" by proposing interestingly new agents.
