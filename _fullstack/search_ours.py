@@ -225,6 +225,10 @@ def search(args):
             json.dump(archive, f, indent=4)
 
     for n in range(start, args.n_generation):
+        total_tokens = _search_input_tokens + _search_output_tokens + _exec_input_tokens + _exec_output_tokens
+        if args.total_token_budget is not None and total_tokens >= args.total_token_budget:
+            print(f"Token budget reached: {total_tokens:,} >= {args.total_token_budget:,} — stopping search.")
+            break
         print(f"============Generation {n + 1}=================")
         system_prompt, prompt = get_prompt(archive)
         msg_list = [
@@ -403,7 +407,7 @@ def evaluate_forward_fn(args, forward_str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_filename', type=str, default="../dataset/fullstack_subset.jsonl")
+    parser.add_argument('--data_filename', type=str, default="dataset/fullstack_subset.jsonl")
     parser.add_argument('--valid_size', type=int, default=12)
     parser.add_argument('--test_size', type=int, default=0)
     parser.add_argument('--shuffle_seed', type=int, default=0)
@@ -411,9 +415,11 @@ if __name__ == "__main__":
     parser.add_argument('--multiprocessing', action='store_true', default=True)
     parser.add_argument('--max_workers', type=int, default=3,
                         help='Keep low — each eval hits SandboxFusion')
-    parser.add_argument('--save_dir', type=str, default='../results/')
+    parser.add_argument('--save_dir', type=str, default='results/')
     parser.add_argument('--expr_name', type=str, default="fullstack_ours_results")
-    parser.add_argument('--n_generation', type=int, default=30)
+    parser.add_argument('--n_generation', type=int, default=25)
+    parser.add_argument('--total_token_budget', type=int, default=None,
+                        help='Stop search early when total tokens (search + execution) exceed this limit. Default: no limit.')
     parser.add_argument('--debug_max', type=int, default=3)
     # SandboxFusion
     parser.add_argument('--sandbox_endpoint', type=str, default=None,
@@ -421,28 +427,27 @@ if __name__ == "__main__":
     parser.add_argument('--compile_timeout', type=int, default=50)
     parser.add_argument('--run_timeout', type=int, default=50)
     # Model / API
-    parser.add_argument('--search_model', type=str, default='google/gemini-2.5-flash',
+    parser.add_argument('--search_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='Meta-LLM used to generate new agent designs')
-    parser.add_argument('--eval_model', type=str, default=None,
+    parser.add_argument('--eval_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='LLM used inside forward() to answer questions (defaults to --search_model)')
-    parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1')
+    parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1',
+                        help='API base URL (OpenAI, OpenRouter, Groq, etc.)')
     parser.add_argument('--api_key', type=str, default=None,
-                        help='Falls back to OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY')
+                        help='API key (falls back to OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY env vars)')
     parser.add_argument('--max_tokens', type=int, default=32768,
                         help='Max tokens for the search/meta LLM calls')
     parser.add_argument('--exec_max_tokens', type=int, default=8600,
                         help='Max tokens for exec LLM calls inside forward()')
-    parser.add_argument('--search_temperature', type=float, default=0.8,
-                        help='Temperature for the meta-LLM (search/reflexion calls)')
-    parser.add_argument('--eval_temperature', type=float, default=1.0,
-                        help='Temperature for agent LLM calls during evaluation')
-    parser.add_argument('--provider_order', type=str, default=None,
+    parser.add_argument('--search_temperature', type=float, default=0.8)
+    parser.add_argument('--eval_temperature', type=float, default=1.0)
+    parser.add_argument('--provider_order', type=str, default="deepseek, alibaba",
                         help='Comma-separated OpenRouter provider order for the exec LLM, e.g. "Google Vertex,Together"')
-    parser.add_argument('--no_exec_thinking', action='store_true', default=False,
+    parser.add_argument('--no_exec_thinking', action='store_true', default=True,
                         help='Disable thinking/reasoning for the exec LLM (passes reasoning.effort=none via extra_body)')
-    parser.add_argument('--search_provider_order', type=str, default=None,
+    parser.add_argument('--search_provider_order', type=str, default="deepseek, alibaba",
                         help='Comma-separated OpenRouter provider order for the search/meta LLM, e.g. "novita,Together"')
-    parser.add_argument('--search_thinking', type=str, default=None, choices=['none', 'medium', 'high'],
+    parser.add_argument('--search_thinking', type=str, default='high', choices=['none', 'medium', 'high'],
                         help='reasoning.effort for the search/meta LLM (none/medium/high). Default: no override')
 
     args = parser.parse_args()
