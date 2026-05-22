@@ -52,7 +52,7 @@ MATH_SUBJECTS = [
     "Precalculus",
     "Counting & Probability",
 ]
-MMLU_PRO_CATEGORIES = ["economics", "physics", "philosophy", "engineering"]
+MMLU_PRO_CATEGORIES = ["physics", "economics", "philosophy", "engineering"]
 FULLSTACK_SUBJECTS = [
     "Advanced Programming",
     "Scientific Computing",
