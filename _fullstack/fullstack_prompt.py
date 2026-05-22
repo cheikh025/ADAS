@@ -176,9 +176,6 @@ You are an expert machine learning researcher testing various agentic systems. Y
 
 ## An example task from FullStackBench:
 
-Programming Language: Python
-
-Problem:
 Implement a function `merge_intervals(intervals)` that takes a list of intervals [start, end] and returns a new list with all overlapping intervals merged.
 
 Example: merge_intervals([[1,3],[2,6],[8,10],[15,18]]) → [[1,6],[8,10],[15,18]]

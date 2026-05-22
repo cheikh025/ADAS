@@ -551,7 +551,7 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
         except TimeoutError:
             pass
 
-    per_category: Dict[str, List[int]] = {s: [] for s in FULLSTACK_SUBJECTS}
+    per_category: Dict[str, List[float]] = {s: [] for s in FULLSTACK_SUBJECTS}
     for idx, res in enumerate(results):
         try:
             prediction = res.content if isinstance(res, Info) else str(res)
@@ -562,7 +562,7 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
                 compile_timeout=SANDBOX_COMPILE_TIMEOUT,
                 run_timeout=SANDBOX_RUN_TIMEOUT,
             )
-            score = 1 if pass_rate >= 1.0 else 0
+            score = pass_rate
         except Exception as e:
             print(f"  Scoring error q{idx}: {e}")
             score = 0

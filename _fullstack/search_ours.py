@@ -367,7 +367,7 @@ def evaluate_forward_fn(args, forward_str):
     print(f"problem length: {len(examples)}")
     max_workers = min(len(examples), args.max_workers) if args.multiprocessing else 1
 
-    # Build task strings — encode both problem and language in one Info
+    # Match AFlow/RobustMAS FullStack input: pass only the raw problem content.
     task_queue = [Info('task', 'User', format_task(ex), -1) for ex in examples]
     agentSystem = AgentSystem()
 
@@ -399,7 +399,7 @@ def evaluate_forward_fn(args, forward_str):
             print(f"Scoring error q{q_idx}: {e}")
             acc_list.append(0)
             continue
-        acc_list.append(1 if pass_rate >= 1.0 else 0)
+        acc_list.append(pass_rate)
 
     print(f"acc: {bootstrap_confidence_interval(acc_list)}")
     return acc_list

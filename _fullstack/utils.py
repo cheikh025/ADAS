@@ -27,11 +27,8 @@ def load_fullstack_examples(file_path: str) -> list[dict]:
 
 
 def format_task(example: dict) -> str:
-    """Format problem + language into a single task string for the agent."""
-    return (
-        f"Programming Language: {example['programming_language']}\n\n"
-        f"Problem:\n{example['content']}"
-    )
+    """Return the same task input used by AFlow and RobustMAS: raw content only."""
+    return example["content"]
 
 
 def score_fullstack(prediction: str, raw_example: dict,
