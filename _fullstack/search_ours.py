@@ -53,6 +53,7 @@ MAX_TOKENS = 32768
 PROVIDER_ROUTING = None
 EXEC_NO_THINKING = False
 EXEC_MAX_TOKENS = 8600
+EVAL_SEED       = None
 SEARCH_PROVIDER_ROUTING = None
 SEARCH_THINKING = None
 
@@ -87,6 +88,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         max_tokens=EXEC_MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
         timeout=120,
+        **({"seed": EVAL_SEED} if EVAL_SEED is not None else {}),
     )
     if response.usage:
         with _exec_token_lock:

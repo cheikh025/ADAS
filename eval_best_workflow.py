@@ -731,6 +731,7 @@ def main():
     round_tokens: List[int] = []
     for k in range(K_ROUND_EVAL):
         print(f"  Round {k + 1}/{K_ROUND_EVAL}")
+        mod.EVAL_SEED = k
         _reset_exec_tokens(mod)
         if DATASET == "MATH":
             round_result = run_math_eval(agent_system, mod.score_math, held_out)

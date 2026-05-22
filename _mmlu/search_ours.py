@@ -63,6 +63,7 @@ SEARCH_TEMPERATURE = 0.8
 EVAL_TEMPERATURE = 1.0
 MAX_TOKENS = 32768
 PROVIDER_ROUTING = None  # e.g. {"order": ["Google Vertex", "Together", "Groq"], "allow_fallbacks": True}
+EVAL_SEED        = None
 
 # ── Token tracking (execution calls only) ────────────────────────────────────
 _exec_input_tokens  = 0
@@ -87,6 +88,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         temperature=EVAL_TEMPERATURE if temperature is None else temperature,
         max_tokens=MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
+        **({"seed": EVAL_SEED} if EVAL_SEED is not None else {}),
     )
     if response.usage:
         with _exec_token_lock:
