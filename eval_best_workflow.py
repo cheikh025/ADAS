@@ -364,7 +364,7 @@ def load_fullstack_fingerprints() -> set:
 
 def build_fullstack_heldout(rng: random.Random) -> List[dict]:
     """
-    Load FullStackBench hard/en examples for the 4 categories, exclude
+    Load FullStackBench en examples for the 4 categories, exclude
     training fingerprints (by id), sample up to NUM_EVAL_QUERIES per category.
     Returns list of dicts matching fullstack_subset.jsonl schema.
     """
@@ -388,7 +388,6 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
         pool = [
             ex for ex in test_split
             if ex["labels"].get("category") == category
-            and ex["labels"].get("difficulty") == "hard"
             and ex["id"] not in fps
         ]
         n = min(NUM_EVAL_QUERIES, len(pool))

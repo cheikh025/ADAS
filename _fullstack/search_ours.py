@@ -3,7 +3,7 @@ ADAS FullStackBench search configured for our 4-category comparison experiment.
 
 Categories: Advanced Programming, Scientific Computing, Data Analysis,
             Desktop and Web Development
-Difficulty: hard, seed=42, 3 per category = 12 total.
+Seed=42, 20 per category = 80 total.
 
 Requires SandboxFusion running at SANDBOX_FUSION_ENDPOINT (default: http://localhost:8080).
 
@@ -408,7 +408,7 @@ def evaluate_forward_fn(args, forward_str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_filename', type=str, default="dataset/fullstack_subset.jsonl")
-    parser.add_argument('--valid_size', type=int, default=12)
+    parser.add_argument('--valid_size', type=int, default=80)
     parser.add_argument('--test_size', type=int, default=0)
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)

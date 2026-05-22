@@ -325,7 +325,6 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
         pool = [
             ex for ex in test_split
             if ex["labels"].get("category") == category
-            and ex["labels"].get("difficulty") == "hard"
             and ex["id"] not in fps
         ]
         n = min(NUM_EVAL_QUERIES, len(pool))

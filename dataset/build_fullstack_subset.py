@@ -1,16 +1,16 @@
 """
-Build ADAS-compatible JSONL with the same FullStackBench subset used by MAS.
+Build ADAS-compatible JSONL with the same FullStackBench subset policy used by AFlow.
 
 Categories: Advanced Programming, Scientific Computing, Data Analysis,
             Desktop and Web Development
-Difficulty: hard, Locale: en, Seed: 42, N_PER_CATEGORY: 3 = 12 total.
+Locale: en, Seed: 42, N_PER_CATEGORY: 20 = 80 total.
 
 Output: dataset/fullstack_subset.jsonl
 Each row: {id, content, category, difficulty, programming_language, raw_example}
 raw_example is the full HF row needed by SandboxFusion as provided_data.
 
 Run:
-    cd C:/Users/cheikh/Desktop/ADAS
+    cd C:/Users/cheikh/Desktop/baseline/ADAS
     python dataset/build_fullstack_subset.py
 """
 
@@ -26,10 +26,9 @@ CATEGORIES = [
     "Data Analysis",
     "Desktop and Web Development",
 ]
-DIFFICULTY = "hard"
 LOCALE = "en"
 SEED = 42
-N_PER_CATEGORY = 3
+N_PER_CATEGORY = 20
 
 OUTPUT_PATH = Path(__file__).parent / "fullstack_subset.jsonl"
 
@@ -47,10 +46,9 @@ def main():
         filtered = [
             ex for ex in data
             if ex["labels"].get("category") == category
-            and ex["labels"].get("difficulty") == DIFFICULTY
         ]
         sampled = rng.sample(filtered, min(N_PER_CATEGORY, len(filtered)))
-        print(f"  {category}: {len(filtered)} hard examples → sampled {len(sampled)}")
+        print(f"  {category}: {len(filtered)} examples → sampled {len(sampled)}")
 
         for ex in sampled:
             rows.append({
