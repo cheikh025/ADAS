@@ -21,21 +21,21 @@ COT = {
 }
 
 COT_SC = {
-    "thought": "Generate multiple solutions and select the most consistent one — useful when the correct approach is ambiguous.",
+    "thought": "Generate multiple independent code solutions with reasoning, then use a low-temperature judge to compare the approaches and select the most robust complete solution.",
     "name": "Self-Consistency with Chain-of-Thought",
     "code": """def forward(self, taskInfo):
-    solve_instruction = "Write a complete, correct code solution for the given programming problem. Output only the code."
-    N = 3
-    coders = [LLMAgentBase(['code'], 'Coder Agent', temperature=0.8) for _ in range(N)]
+    solve_instruction = "Please think step by step about the algorithm, edge cases, input/output format, and implementation details. Then write a complete, correct code solution for the given programming problem."
+    N = 5
+    coders = [LLMAgentBase(['thinking', 'code'], 'Chain-of-Thought Coder Agent', temperature=0.8) for _ in range(N)]
 
-    solutions = []
+    possible_solutions = []
     for coder in coders:
-        code, = coder([taskInfo], solve_instruction)
-        solutions.append(code)
+        thinking, code = coder([taskInfo], solve_instruction)
+        possible_solutions.extend([thinking, code])
 
-    judge_instruction = "Given multiple candidate code solutions for the same problem, select the one most likely to be correct and complete. Return only that solution."
-    judge = LLMAgentBase(['code'], 'Judge Agent', temperature=0.1)
-    code, = judge([taskInfo] + solutions, judge_instruction)
+    judge_instruction = "Given multiple independently reasoned candidate code solutions for the same programming problem, compare their algorithms, edge-case handling, and completeness. Select the most likely correct solution. Return only the complete code solution."
+    judge = LLMAgentBase(['thinking', 'code'], 'Final Decision Agent', temperature=0.1)
+    thinking, code = judge([taskInfo] + possible_solutions, judge_instruction)
     return code
 """
 }
