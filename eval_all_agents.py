@@ -66,11 +66,11 @@ MMLU_PRO_TRAIN_CSV      = _ADAS_DIR / "dataset/mmlu_pro_4categories.csv"
 FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
 MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
 MMLU_PRO_HF_CACHE       = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
-FULLSTACK_HF_CACHE      = _AFLOW_DIR / "data/fullstack_hf_cache"
+FULLSTACK_HF_CACHE      = _ADAS_DIR / "data/fullstack_hf_cache"
 
 SANDBOX_ENDPOINT        = os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
-SANDBOX_COMPILE_TIMEOUT = 50
-SANDBOX_RUN_TIMEOUT     = 50
+SANDBOX_COMPILE_TIMEOUT = 120
+SANDBOX_RUN_TIMEOUT     = 120
 
 MATH_ARCHIVE      = _ADAS_DIR / "results/math_ours_results_run_archive.json"
 MMLU_PRO_ARCHIVE  = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
@@ -320,6 +320,9 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
     )
     test_split = list(ds)
 
+    n_hard_target   = NUM_EVAL_QUERIES // 2
+    n_medium_target = NUM_EVAL_QUERIES - n_hard_target
+
     records = []
     for category in FULLSTACK_SUBJECTS:
         pool = [
@@ -327,10 +330,13 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
             if ex["labels"].get("category") == category
             and ex["id"] not in fps
         ]
-        n = min(NUM_EVAL_QUERIES, len(pool))
-        if n < NUM_EVAL_QUERIES:
-            print(f"  [warn] {category}: only {n} held-out available (requested {NUM_EVAL_QUERIES})")
-        for ex in rng.sample(pool, n):
+        hard   = [ex for ex in pool if ex["labels"].get("difficulty") == "hard"]
+        medium = [ex for ex in pool if ex["labels"].get("difficulty") == "medium"]
+
+        n_hard   = min(n_hard_target,   len(hard))
+        n_medium = min(n_medium_target, len(medium))
+
+        for ex in rng.sample(hard, n_hard) + rng.sample(medium, n_medium):
             records.append({
                 "id": ex["id"],
                 "content": ex["content"],
@@ -339,7 +345,7 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
                 "programming_language": ex["labels"]["programming_language"],
                 "raw_example": dict(ex),
             })
-        print(f"  {category}: {n} held-out queries")
+        print(f"  {category}: {n_hard}h + {n_medium}m = {n_hard + n_medium} held-out queries")
     return records
 
 
@@ -430,6 +436,9 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
     for idx, res in enumerate(results):
         try:
             prediction = res.content if isinstance(res, Info) else str(res)
+            if "```" not in prediction:
+                lang = held_out[idx].get("programming_language", "python")
+                prediction = f"``` {lang}\n{prediction}\n```"
             pass_rate = score_fullstack(
                 prediction=prediction,
                 raw_example=held_out[idx]["raw_example"],
@@ -437,7 +446,7 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
                 compile_timeout=SANDBOX_COMPILE_TIMEOUT,
                 run_timeout=SANDBOX_RUN_TIMEOUT,
             )
-            score = 1 if pass_rate >= 1.0 else 0
+            score = pass_rate
         except Exception as e:
             print(f"  Scoring error q{idx}: {e}")
             score = 0

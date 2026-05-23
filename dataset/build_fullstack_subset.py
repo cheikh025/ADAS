@@ -3,7 +3,8 @@ Build ADAS-compatible JSONL with the same FullStackBench subset policy used by A
 
 Categories: Advanced Programming, Scientific Computing, Data Analysis,
             Desktop and Web Development
-Locale: en, Seed: 42, N_PER_CATEGORY: 20 = 80 total.
+Locale: en, Seed: 42, N_HARD: 10, N_MEDIUM: 10 = 20 per category = 80 total.
+Stratified by difficulty: 10 hard + 10 medium, no easy.
 
 Output: dataset/fullstack_subset.jsonl
 Each row: {id, content, category, difficulty, programming_language, raw_example}
@@ -28,7 +29,8 @@ CATEGORIES = [
 ]
 LOCALE = "en"
 SEED = 42
-N_PER_CATEGORY = 20
+N_HARD = 10
+N_MEDIUM = 10
 
 OUTPUT_PATH = Path(__file__).parent / "fullstack_subset.jsonl"
 
@@ -39,16 +41,19 @@ def main():
     data = list(dataset)
     print(f"Total examples: {len(data)}")
 
-    rng = random.Random(SEED)
     rows = []
 
     for category in CATEGORIES:
-        filtered = [
-            ex for ex in data
-            if ex["labels"].get("category") == category
-        ]
-        sampled = rng.sample(filtered, min(N_PER_CATEGORY, len(filtered)))
-        print(f"  {category}: {len(filtered)} examples → sampled {len(sampled)}")
+        rng = random.Random(SEED)
+        filtered = [ex for ex in data if ex["labels"].get("category") == category]
+        hard   = [ex for ex in filtered if ex["labels"].get("difficulty") == "hard"]
+        medium = [ex for ex in filtered if ex["labels"].get("difficulty") == "medium"]
+
+        sampled_hard   = rng.sample(hard,   min(N_HARD,   len(hard)))
+        sampled_medium = rng.sample(medium, min(N_MEDIUM, len(medium)))
+        sampled = sampled_hard + sampled_medium
+
+        print(f"  {category}: {len(hard)} hard, {len(medium)} medium → sampled {len(sampled_hard)}h + {len(sampled_medium)}m")
 
         for ex in sampled:
             rows.append({
@@ -57,7 +62,7 @@ def main():
                 "category": ex["labels"]["category"],
                 "difficulty": ex["labels"]["difficulty"],
                 "programming_language": ex["labels"]["programming_language"],
-                "raw_example": dict(ex),  # full row for SandboxFusion provided_data
+                "raw_example": dict(ex),
             })
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:

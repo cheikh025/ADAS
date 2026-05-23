@@ -371,35 +371,44 @@ def evaluate_forward_fn(args, forward_str):
     task_queue = [Info('task', 'User', format_task(ex), -1) for ex in examples]
     agentSystem = AgentSystem()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_idx = {executor.submit(agentSystem.forward, task): i for i, task in enumerate(task_queue)}
-        results = [None] * len(task_queue)
+    def run_and_score(idx):
+        example = examples[idx]
+        task = task_queue[idx]
         try:
-            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue)):
-                idx = future_to_idx[future]
-                try:
-                    results[idx] = future.result(timeout=180)
-                except Exception:
-                    results[idx] = None
-        except TimeoutError:
-            pass
-
-    acc_list = []
-    for q_idx, res in enumerate(results):
-        try:
+            # 1. Run the agent's forward function
+            res = agentSystem.forward(task)
+            
+            # 2. Extract content (code)
             prediction = res.content if isinstance(res, Info) else str(res)
+            
+            # If the prediction is "naked" code (no backticks), wrap it to help the SandboxFusion extractor
+            if "```" not in prediction:
+                lang = example.get("programming_language", "python")
+                prediction = f"``` {lang}\n{prediction}\n```"
+
+            # 3. Score immediately using the updated score_fullstack
             pass_rate = score_fullstack(
                 prediction=prediction,
-                raw_example=examples[q_idx]["raw_example"],
+                raw_example=example["raw_example"],
                 sandbox_endpoint=args.sandbox_endpoint,
                 compile_timeout=args.compile_timeout,
                 run_timeout=args.run_timeout,
             )
+            return pass_rate
         except Exception as e:
-            print(f"Scoring error q{q_idx}: {e}")
-            acc_list.append(0)
-            continue
-        acc_list.append(pass_rate)
+            print(f"Error in run_and_score for q{idx}: {e}")
+            return 0.0
+
+    acc_list = [0.0] * len(task_queue)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {executor.submit(run_and_score, i): i for i in range(len(task_queue))}
+        for future in tqdm(as_completed(future_to_idx), total=len(task_queue), desc="Evaluating & Scoring"):
+            idx = future_to_idx[future]
+            try:
+                acc_list[idx] = future.result()
+            except Exception as e:
+                print(f"Future result error q{idx}: {e}")
+                acc_list[idx] = 0.0
 
     print(f"acc: {bootstrap_confidence_interval(acc_list)}")
     return acc_list
@@ -413,7 +422,7 @@ if __name__ == "__main__":
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
-    parser.add_argument('--max_workers', type=int, default=3,
+    parser.add_argument('--max_workers', type=int, default=10,
                         help='Keep low — each eval hits SandboxFusion')
     parser.add_argument('--save_dir', type=str, default='results/')
     parser.add_argument('--expr_name', type=str, default="fullstack_ours_results")
@@ -424,8 +433,8 @@ if __name__ == "__main__":
     # SandboxFusion
     parser.add_argument('--sandbox_endpoint', type=str, default=None,
                         help='SandboxFusion endpoint (default: SANDBOX_FUSION_ENDPOINT env or http://localhost:8080)')
-    parser.add_argument('--compile_timeout', type=int, default=50)
-    parser.add_argument('--run_timeout', type=int, default=50)
+    parser.add_argument('--compile_timeout', type=int, default=120)
+    parser.add_argument('--run_timeout', type=int, default=120)
     # Model / API
     parser.add_argument('--search_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='Meta-LLM used to generate new agent designs')

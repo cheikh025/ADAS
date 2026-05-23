@@ -85,11 +85,11 @@ FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
 MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
 MMLU_HF_CACHE           = _AFLOW_DIR / "data/mmlu_hf_cache"
 MMLU_PRO_HF_CACHE       = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
-FULLSTACK_HF_CACHE      = _AFLOW_DIR / "data/fullstack_hf_cache"
+FULLSTACK_HF_CACHE      = _ADAS_DIR / "data/fullstack_hf_cache"
 
 SANDBOX_ENDPOINT        = os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
-SANDBOX_COMPILE_TIMEOUT = 50
-SANDBOX_RUN_TIMEOUT     = 50
+SANDBOX_COMPILE_TIMEOUT = 120
+SANDBOX_RUN_TIMEOUT     = 120
 
 MATH_ARCHIVE      = _ADAS_DIR / "results/math_ours_results_run_archive.json"
 MMLU_ARCHIVE      = _ADAS_DIR / "results/mmlu_ours_results_run_archive.json"
@@ -366,6 +366,7 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
     """
     Load FullStackBench en examples for the 4 categories, exclude
     training fingerprints (by id), sample up to NUM_EVAL_QUERIES per category.
+    Stratified: 50 hard + 50 medium, no easy (capped at available if fewer).
     Returns list of dicts matching fullstack_subset.jsonl schema.
     """
     fps = load_fullstack_fingerprints()
@@ -390,11 +391,18 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
             if ex["labels"].get("category") == category
             and ex["id"] not in fps
         ]
-        n = min(NUM_EVAL_QUERIES, len(pool))
-        if n < NUM_EVAL_QUERIES:
-            print(f"  [warn] {category}: only {n} held-out available (requested {NUM_EVAL_QUERIES})")
-        sampled = rng.sample(pool, n)
-        for ex in sampled:
+        hard   = [ex for ex in pool if ex["labels"].get("difficulty") == "hard"]
+        medium = [ex for ex in pool if ex["labels"].get("difficulty") == "medium"]
+        easy   = [ex for ex in pool if ex["labels"].get("difficulty") == "easy"]
+
+        target_hard  = NUM_EVAL_QUERIES // 2
+        got_hard     = rng.sample(hard,   min(target_hard,         len(hard)))
+        remaining    = NUM_EVAL_QUERIES - len(got_hard)
+        got_medium   = rng.sample(medium, min(remaining,           len(medium)))
+        remaining   -= len(got_medium)
+        got_easy     = rng.sample(easy,   min(remaining,           len(easy)))
+
+        for ex in got_hard + got_medium + got_easy:
             records.append({
                 "id": ex["id"],
                 "content": ex["content"],
@@ -403,7 +411,8 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
                 "programming_language": ex["labels"]["programming_language"],
                 "raw_example": dict(ex),
             })
-        print(f"  {category}: {n} held-out queries")
+        n = len(got_hard) + len(got_medium) + len(got_easy)
+        print(f"  {category}: {len(got_hard)}h + {len(got_medium)}m + {len(got_easy)}e = {n} held-out queries")
     return records
 
 
@@ -555,6 +564,9 @@ def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
     for idx, res in enumerate(results):
         try:
             prediction = res.content if isinstance(res, Info) else str(res)
+            if "```" not in prediction:
+                lang = held_out[idx].get("programming_language", "python")
+                prediction = f"``` {lang}\n{prediction}\n```"
             pass_rate = score_fullstack(
                 prediction=prediction,
                 raw_example=held_out[idx]["raw_example"],

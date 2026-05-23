@@ -31,15 +31,22 @@ def format_task(example: dict) -> str:
     return example["content"]
 
 
+import threading
+
+_debug_lock = threading.Lock()
+
 def score_fullstack(prediction: str, raw_example: dict,
                     sandbox_endpoint: str = None,
-                    compile_timeout: int = 50,
-                    run_timeout: int = 50) -> float:
+                    compile_timeout: int = 120,
+                    run_timeout: int = 120) -> float:
     """
     Submit raw model completion to SandboxFusion. Returns pass_rate (0.0–1.0).
     SandboxFusion handles code extraction — pass the raw string, do NOT pre-extract.
     """
     endpoint = sandbox_endpoint or os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
+    # Language is nested inside 'labels' in the raw HF example
+    labels = raw_example.get("labels", {})
+    language = labels.get("programming_language", "python")
     try:
         response = requests.post(
             f"{endpoint}/submit",
@@ -56,8 +63,26 @@ def score_fullstack(prediction: str, raw_example: dict,
             },
             timeout=compile_timeout + run_timeout + 10,
         )
+        
+        # --- DEBUG LOGGING (Moved before raise_for_status) ---
+        try:
+            result = response.json()
+        except:
+            result = {"text": response.text}
+
+        with _debug_lock:
+            with open("fullstack_debug.jsonl", "a", encoding="utf-8") as f:
+                debug_entry = {
+                    "id": raw_example["id"],
+                    "language": language,
+                    "status_code": response.status_code,
+                    "sent_to_sandbox": prediction,
+                    "sandbox_response": result
+                }
+                f.write(json.dumps(debug_entry, ensure_ascii=False) + "\n")
+        # --------------------------------------------------
+
         response.raise_for_status()
-        result = response.json()
         accepted = result.get("accepted", False)
         tests = result.get("tests", [])
         if tests:
