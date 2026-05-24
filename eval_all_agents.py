@@ -37,11 +37,11 @@ _ADAS_DIR  = Path(__file__).parent.resolve()
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION  ← change here
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET          = "FullStack"   # "MATH", "MMLU_PRO", or "FullStack"
-NUM_EVAL_QUERIES = 20      # held-out queries per subject / category
+DATASET          = "MATH"   # "MATH", "MMLU_PRO", or "FullStack"
+NUM_EVAL_QUERIES = 100      # held-out queries per subject / category
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
-K_ROUND_EVAL     =  1       # evaluation rounds per agent (scores averaged, std reported)
+K_ROUND_EVAL     =  3       # evaluation rounds per agent (scores averaged, std reported)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 3 subjects — matches MAS_pro and AFlow for a fair comparison
@@ -319,9 +319,6 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
     )
     test_split = list(ds)
 
-    n_hard_target   = NUM_EVAL_QUERIES // 2
-    n_medium_target = NUM_EVAL_QUERIES - n_hard_target
-
     records = []
     for category in FULLSTACK_SUBJECTS:
         pool = [
@@ -331,11 +328,16 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
         ]
         hard   = [ex for ex in pool if ex["labels"].get("difficulty") == "hard"]
         medium = [ex for ex in pool if ex["labels"].get("difficulty") == "medium"]
+        easy   = [ex for ex in pool if ex["labels"].get("difficulty") == "easy"]
 
-        n_hard   = min(n_hard_target,   len(hard))
-        n_medium = min(n_medium_target, len(medium))
+        target_hard = NUM_EVAL_QUERIES // 2
+        got_hard    = rng.sample(hard,   min(target_hard,         len(hard)))
+        remaining   = NUM_EVAL_QUERIES - len(got_hard)
+        got_medium  = rng.sample(medium, min(remaining,           len(medium)))
+        remaining  -= len(got_medium)
+        got_easy    = rng.sample(easy,   min(remaining,           len(easy)))
 
-        for ex in rng.sample(hard, n_hard) + rng.sample(medium, n_medium):
+        for ex in got_hard + got_medium + got_easy:
             records.append({
                 "id": ex["id"],
                 "content": ex["content"],
@@ -344,7 +346,8 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
                 "programming_language": ex["labels"]["programming_language"],
                 "raw_example": dict(ex),
             })
-        print(f"  {category}: {n_hard}h + {n_medium}m = {n_hard + n_medium} held-out queries")
+        n = len(got_hard) + len(got_medium) + len(got_easy)
+        print(f"  {category}: {len(got_hard)}h + {len(got_medium)}m + {len(got_easy)}e = {n} held-out queries")
     return records
 
 
