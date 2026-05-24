@@ -12,7 +12,6 @@ Run:
 
 import json
 import random
-import shutil
 import zipfile
 from pathlib import Path
 
@@ -28,7 +27,7 @@ SEED = 42
 N_PER_SUBJECT = 20
 
 OUTPUT_PATH = Path(__file__).parent / "math_4subjects.jsonl"
-CACHE_DIR = Path(__file__).parent / "_math_cache"
+CACHE_DIR   = Path(__file__).parent.parent / "data" / "math_hf_cache"
 MATH_URL = "https://www.modelscope.cn/datasets/opencompass/competition_math/resolve/master/data/MATH.zip"
 
 
@@ -97,9 +96,7 @@ def main():
 
     print(f"\nWrote {len(rows)} records → {OUTPUT_PATH}")
 
-    if CACHE_DIR.exists():
-        shutil.rmtree(CACHE_DIR)
-        print(f"Cleaned up cache → {CACHE_DIR}")
+    print(f"Full test data kept at {CACHE_DIR} (needed for held-out eval)")
 
 
 if __name__ == "__main__":

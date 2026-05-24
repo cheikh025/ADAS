@@ -42,7 +42,6 @@ load_dotenv()
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 _ADAS_DIR  = Path(__file__).parent.resolve()
-_AFLOW_DIR = _ADAS_DIR.parent / "AFlow"   # reuse AFlow's raw data caches
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
 DATASET          = "MMLUPro"   # "MATH", "MMLU", or "MMLUPro"
@@ -82,9 +81,9 @@ MATH_LEVEL = "Level 5"
 MATH_TRAIN_JSONL        = _ADAS_DIR / "dataset/math_4subjects.jsonl"
 MMLU_TRAIN_CSV          = _ADAS_DIR / "dataset/mmlu_4subjects.csv"
 FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
-MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
-MMLU_HF_CACHE           = _AFLOW_DIR / "data/mmlu_hf_cache"
-MMLU_PRO_HF_CACHE       = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
+MATH_RAW_TEST_DIR       = _ADAS_DIR / "data/math_hf_cache/MATH/test"
+MMLU_HF_CACHE           = _ADAS_DIR / "data/mmlu_hf_cache"
+MMLU_PRO_HF_CACHE       = _ADAS_DIR / "data/mmlu_pro_hf_cache"
 FULLSTACK_HF_CACHE      = _ADAS_DIR / "data/fullstack_hf_cache"
 
 SANDBOX_ENDPOINT        = os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
@@ -233,7 +232,7 @@ def build_math_heldout(rng: random.Random) -> List[dict]:
     if not MATH_RAW_TEST_DIR.exists():
         raise FileNotFoundError(
             f"MATH raw data not found: {MATH_RAW_TEST_DIR}\n"
-            "Run: python Baseline/AFlow/data/build_math_validate.py"
+            "Run: python dataset/build_math_4subjects.py"
         )
 
     raw = []
@@ -541,43 +540,46 @@ def run_mmlu_pro_eval(agent_system, held_out: List[dict], mod) -> Dict[str, floa
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_subject.items()}
 
 
-def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
+def run_fullstack_eval(agent_system, held_out: List[dict], mod) -> Dict[str, float]:
     from _fullstack.utils import format_task, score_fullstack
-    task_queue = [Info("task", "User", format_task(ex), -1) for ex in held_out]
 
-    workers = min(len(held_out), MAX_WORKERS)
-    from tqdm import tqdm
-    with ThreadPoolExecutor(max_workers=workers) as exe:
-        future_to_idx = {exe.submit(agent_system.forward, task): i for i, task in enumerate(task_queue)}
-        results = [None] * len(task_queue)
+    def run_and_score(idx):
+        ex = held_out[idx]
+        task = mod.Info("task", "User", format_task(ex), -1)
         try:
-            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue), desc="FullStack eval"):
-                idx = future_to_idx[future]
-                try:
-                    results[idx] = future.result(timeout=180)
-                except Exception:
-                    results[idx] = None
-        except TimeoutError:
-            pass
-
-    per_category: Dict[str, List[float]] = {s: [] for s in FULLSTACK_SUBJECTS}
-    for idx, res in enumerate(results):
-        try:
-            prediction = res.content if isinstance(res, Info) else str(res)
+            res = agent_system.forward(task)
+            prediction = res.content if hasattr(res, 'content') else str(res)
             if "```" not in prediction:
-                lang = held_out[idx].get("programming_language", "python")
+                lang = ex.get("programming_language", "python")
                 prediction = f"``` {lang}\n{prediction}\n```"
-            pass_rate = score_fullstack(
+            return score_fullstack(
                 prediction=prediction,
-                raw_example=held_out[idx]["raw_example"],
+                raw_example=ex["raw_example"],
                 sandbox_endpoint=SANDBOX_ENDPOINT,
                 compile_timeout=SANDBOX_COMPILE_TIMEOUT,
                 run_timeout=SANDBOX_RUN_TIMEOUT,
             )
-            score = pass_rate
         except Exception as e:
             print(f"  Scoring error q{idx}: {e}")
-            score = 0
+            return 0.0
+
+    workers = min(len(held_out), MAX_WORKERS)
+    scores = [0.0] * len(held_out)
+    from tqdm import tqdm
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        future_to_idx = {exe.submit(run_and_score, i): i for i in range(len(held_out))}
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=900), total=len(held_out), desc="FullStack eval"):
+                idx = future_to_idx[future]
+                try:
+                    scores[idx] = future.result(timeout=360)
+                except Exception:
+                    scores[idx] = 0.0
+        except TimeoutError:
+            pass
+
+    per_category: Dict[str, List[float]] = {s: [] for s in FULLSTACK_SUBJECTS}
+    for idx, score in enumerate(scores):
         per_category[held_out[idx]["category"]].append(score)
 
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_category.items()}
@@ -749,7 +751,7 @@ def main():
         elif DATASET == "MMLUPro":
             round_result = run_mmlu_pro_eval(agent_system, held_out, mod)
         elif DATASET == "FullStack":
-            round_result = run_fullstack_eval(agent_system, held_out)
+            round_result = run_fullstack_eval(agent_system, held_out, mod)
         else:
             round_result = run_mmlu_eval(agent_system, held_out, mod.format_multichoice_question)
         round_tokens.append(_read_exec_tokens(mod))

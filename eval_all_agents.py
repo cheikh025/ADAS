@@ -33,16 +33,15 @@ load_dotenv()
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 _ADAS_DIR  = Path(__file__).parent.resolve()
-_AFLOW_DIR = _ADAS_DIR.parent / "AFlow"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION  ← change here
 # ─────────────────────────────────────────────────────────────────────────────
-DATASET          = "MMLU_PRO"   # "MATH", "MMLU_PRO", or "FullStack"
-NUM_EVAL_QUERIES = 100      # held-out queries per subject / category
+DATASET          = "FullStack"   # "MATH", "MMLU_PRO", or "FullStack"
+NUM_EVAL_QUERIES = 20      # held-out queries per subject / category
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
-K_ROUND_EVAL     = 3        # evaluation rounds per agent (scores averaged, std reported)
+K_ROUND_EVAL     =  1       # evaluation rounds per agent (scores averaged, std reported)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 3 subjects — matches MAS_pro and AFlow for a fair comparison
@@ -64,8 +63,8 @@ MATH_LEVEL = "Level 5"
 MATH_TRAIN_JSONL        = _ADAS_DIR / "dataset/math_4subjects.jsonl"
 MMLU_PRO_TRAIN_CSV      = _ADAS_DIR / "dataset/mmlu_pro_4categories.csv"
 FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
-MATH_RAW_TEST_DIR       = _AFLOW_DIR / "data/math_hf_cache/MATH/test"
-MMLU_PRO_HF_CACHE       = _AFLOW_DIR / "data/mmlu_pro_hf_cache"
+MATH_RAW_TEST_DIR       = _ADAS_DIR / "data/math_hf_cache/MATH/test"
+MMLU_PRO_HF_CACHE       = _ADAS_DIR / "data/mmlu_pro_hf_cache"
 FULLSTACK_HF_CACHE      = _ADAS_DIR / "data/fullstack_hf_cache"
 
 SANDBOX_ENDPOINT        = os.environ.get("SANDBOX_FUSION_ENDPOINT", "http://localhost:8080")
@@ -79,9 +78,9 @@ FULLSTACK_ARCHIVE = _ADAS_DIR / "results/fullstack_ours_results_run_archive.json
 # Baselines pulled from the initial archive entries
 BASELINE_NAMES = [
     "Chain-of-Thought",
-    "Self-Consistency with Chain-of-Thought",
-    "Self-Refine (Reflexion)",
-    "LLM Debate",
+  #  "Self-Consistency with Chain-of-Thought",
+   # "Self-Refine (Reflexion)",
+   # "LLM Debate",
 ]
 
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
@@ -227,7 +226,7 @@ def build_math_heldout(rng: random.Random) -> List[dict]:
     if not MATH_RAW_TEST_DIR.exists():
         raise FileNotFoundError(
             f"MATH raw data not found: {MATH_RAW_TEST_DIR}\n"
-            "Run: python AFlow/data/build_math_validate.py  (downloads the cache)"
+            "Run: python dataset/build_math_4subjects.py"
         )
 
     raw = []
@@ -376,7 +375,7 @@ def run_math_eval(agent_system, held_out: List[dict], score_math, InfoCls=None) 
     buckets: Dict[str, List[int]] = {s: [] for s in MATH_SUBJECTS}
     for idx, res in enumerate(results):
         try:
-            pred = res.content if isinstance(res, Info) else str(res)
+            pred = res.content if hasattr(res, 'content') else str(res)
             correct = int(score_math(solutions[idx], pred))
         except Exception:
             correct = 0
@@ -414,42 +413,46 @@ def run_mmlu_pro_eval(agent_system, held_out: List[dict],
     return {c: (sum(v) / len(v) if v else 0.0) for c, v in buckets.items()}
 
 
-def run_fullstack_eval(agent_system, held_out: List[dict]) -> Dict[str, float]:
+def run_fullstack_eval(agent_system, held_out: List[dict], mod) -> Dict[str, float]:
     from _fullstack.utils import format_task, score_fullstack
-    task_queue = [Info("task", "User", format_task(ex), -1) for ex in held_out]
 
-    from tqdm import tqdm
-    with ThreadPoolExecutor(max_workers=min(len(held_out), MAX_WORKERS)) as exe:
-        future_to_idx = {exe.submit(agent_system.forward, task): i for i, task in enumerate(task_queue)}
-        results = [None] * len(task_queue)
+    def run_and_score(idx):
+        ex = held_out[idx]
+        task = mod.Info("task", "User", format_task(ex), -1)
         try:
-            for future in tqdm(as_completed(future_to_idx, timeout=600), total=len(task_queue), desc="  running"):
-                idx = future_to_idx[future]
-                try:
-                    results[idx] = future.result(timeout=180)
-                except Exception:
-                    results[idx] = None
-        except TimeoutError:
-            pass
-
-    per_category: Dict[str, List[int]] = {s: [] for s in FULLSTACK_SUBJECTS}
-    for idx, res in enumerate(results):
-        try:
-            prediction = res.content if isinstance(res, Info) else str(res)
+            res = agent_system.forward(task)
+            prediction = res.content if hasattr(res, 'content') else str(res)
             if "```" not in prediction:
-                lang = held_out[idx].get("programming_language", "python")
+                lang = ex.get("programming_language", "python")
                 prediction = f"``` {lang}\n{prediction}\n```"
-            pass_rate = score_fullstack(
+            return score_fullstack(
                 prediction=prediction,
-                raw_example=held_out[idx]["raw_example"],
+                raw_example=ex["raw_example"],
                 sandbox_endpoint=SANDBOX_ENDPOINT,
                 compile_timeout=SANDBOX_COMPILE_TIMEOUT,
                 run_timeout=SANDBOX_RUN_TIMEOUT,
             )
-            score = pass_rate
         except Exception as e:
             print(f"  Scoring error q{idx}: {e}")
-            score = 0
+            return 0.0
+
+    workers = min(len(held_out), MAX_WORKERS)
+    scores = [0.0] * len(held_out)
+    from tqdm import tqdm
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        future_to_idx = {exe.submit(run_and_score, i): i for i in range(len(held_out))}
+        try:
+            for future in tqdm(as_completed(future_to_idx, timeout=900), total=len(held_out), desc="  running"):
+                idx = future_to_idx[future]
+                try:
+                    scores[idx] = future.result(timeout=360)
+                except Exception:
+                    scores[idx] = 0.0
+        except TimeoutError:
+            pass
+
+    per_category: Dict[str, List[float]] = {s: [] for s in FULLSTACK_SUBJECTS}
+    for idx, score in enumerate(scores):
         per_category[held_out[idx]["category"]].append(score)
 
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_category.items()}
@@ -617,7 +620,7 @@ def main():
             if DATASET == "MATH":
                 round_result = run_math_eval(agent_system, held_out, mod.score_math, mod.Info)
             elif DATASET == "FullStack":
-                round_result = run_fullstack_eval(agent_system, held_out)
+                round_result = run_fullstack_eval(agent_system, held_out, mod)
             else:
                 round_result = run_mmlu_pro_eval(
                     agent_system, held_out,
