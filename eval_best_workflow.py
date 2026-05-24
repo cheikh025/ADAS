@@ -46,10 +46,10 @@ _AFLOW_DIR = _ADAS_DIR.parent / "AFlow"   # reuse AFlow's raw data caches
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
 DATASET          = "MMLUPro"   # "MATH", "MMLU", or "MMLUPro"
-NUM_EVAL_QUERIES = 50      # held-out queries per subject
+NUM_EVAL_QUERIES = 100     # held-out queries per subject
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
-K_ROUND_EVAL     = 5       # number of eval rounds (scores averaged); matches MAS_pro
+K_ROUND_EVAL     = 3       # number of eval rounds (scores averaged); matches MAS_pro
 # ──────────────────────────────────────────────────────────────────────────────
 
 FULLSTACK_SUBJECTS = [
