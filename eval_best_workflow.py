@@ -52,15 +52,14 @@ K_ROUND_EVAL     = 3       # number of eval rounds (scores averaged); matches MA
 # ──────────────────────────────────────────────────────────────────────────────
 
 FULLSTACK_SUBJECTS = [
-    "Advanced Programming",
-    "Scientific Computing",
-    "Data Analysis",
-    "Desktop and Web Development",
+    "Mathematics",
+    "DataBase",
+    "Machine Learning",
+    "Software Engineering",
 ]
 MATH_SUBJECTS = [
-    "Number Theory",
-    "Precalculus",
-    "Counting & Probability",
+    "Algebra",
+    "Geometry",
 ]
 MMLU_SUBJECTS = [
     "international_law",
@@ -394,14 +393,15 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
         medium = [ex for ex in pool if ex["labels"].get("difficulty") == "medium"]
         easy   = [ex for ex in pool if ex["labels"].get("difficulty") == "easy"]
 
-        target_hard  = NUM_EVAL_QUERIES // 2
-        got_hard     = rng.sample(hard,   min(target_hard,         len(hard)))
-        remaining    = NUM_EVAL_QUERIES - len(got_hard)
-        got_medium   = rng.sample(medium, min(remaining,           len(medium)))
-        remaining   -= len(got_medium)
-        got_easy     = rng.sample(easy,   min(remaining,           len(easy)))
+        result = list(hard)
+        remaining = NUM_EVAL_QUERIES - len(result)
+        if remaining > 0:
+            result += medium[:remaining]
+        remaining = NUM_EVAL_QUERIES - len(result)
+        if remaining > 0:
+            result += easy[:remaining]
 
-        for ex in got_hard + got_medium + got_easy:
+        for ex in result:
             records.append({
                 "id": ex["id"],
                 "content": ex["content"],
@@ -410,8 +410,8 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
                 "programming_language": ex["labels"]["programming_language"],
                 "raw_example": dict(ex),
             })
-        n = len(got_hard) + len(got_medium) + len(got_easy)
-        print(f"  {category}: {len(got_hard)}h + {len(got_medium)}m + {len(got_easy)}e = {n} held-out queries")
+        n = len(result)
+        print(f"  {category}: {n} held-out queries")
     return records
 
 
