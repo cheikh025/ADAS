@@ -44,7 +44,7 @@ load_dotenv()
 _ADAS_DIR  = Path(__file__).parent.resolve()
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
-DATASET          = "MMLUPro"   # "MATH", "MMLU", or "MMLUPro"
+DATASET          = "MATH"   # "MATH", "MMLU", or "MMLUPro"
 NUM_EVAL_QUERIES = 100     # held-out queries per subject
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
@@ -437,11 +437,11 @@ def _extract_mmlu_prediction(res) -> int:
     return -1
 
 
-def run_mmlu_eval(agent_system, held_out: List[dict], format_q_fn) -> Dict[str, float]:
+def run_mmlu_eval(agent_system, held_out: List[dict], format_q_fn, mod) -> Dict[str, float]:
     questions = [format_q_fn(ex) for ex in held_out]
     answers   = [LETTER_TO_INDEX[ex["Answer"]] for ex in held_out]
     subjects  = [ex["Subject"] for ex in held_out]
-    task_queue = [Info("task", "User", q, -1) for q in questions]
+    task_queue = [mod.Info("task", "User", q, -1) for q in questions]
 
     workers = min(len(held_out), MAX_WORKERS)
     from tqdm import tqdm
@@ -469,11 +469,11 @@ def run_mmlu_eval(agent_system, held_out: List[dict], format_q_fn) -> Dict[str, 
 
 
 
-def run_math_eval(agent_system, score_math_fn, held_out: List[dict]) -> Dict[str, float]:
+def run_math_eval(agent_system, score_math_fn, held_out: List[dict], mod) -> Dict[str, float]:
     questions  = [ex["problem"]  for ex in held_out]
     solutions  = [ex["solution"] for ex in held_out]
     subjects   = [ex["subject"]  for ex in held_out]
-    task_queue = [Info("task", "User", q, -1) for q in questions]
+    task_queue = [mod.Info("task", "User", q, -1) for q in questions]
 
     workers = min(len(held_out), MAX_WORKERS)
     from tqdm import tqdm
@@ -493,7 +493,7 @@ def run_math_eval(agent_system, score_math_fn, held_out: List[dict]) -> Dict[str
     buckets: Dict[str, List[int]] = {s: [] for s in MATH_SUBJECTS}
     for idx, res in enumerate(results):
         try:
-            pred = res.content if isinstance(res, Info) else str(res)
+            pred = res.content if hasattr(res, 'content') else str(res)
             correct = int(score_math_fn(solutions[idx], pred))
         except Exception:
             correct = 0
@@ -617,7 +617,7 @@ def _read_exec_tokens(mod) -> int:
 # Results saving
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_results(per_subject: dict, per_subject_std: dict, agent_name: str, dataset: str, avg_tokens_per_query: float = 0.0):
+def save_results(per_subject: dict, per_subject_std: dict, agent_name: str, dataset: str, avg_tokens_per_query: float = 0.0, model: str = ""):
     out_dir = _ADAS_DIR / "results"
     out_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -639,6 +639,7 @@ def save_results(per_subject: dict, per_subject_std: dict, agent_name: str, data
         f.write(f"ADAS HELD-OUT EVALUATION — {dataset}\n")
         f.write("=" * 70 + "\n")
         f.write(f"Agent:             {agent_name}\n")
+        f.write(f"Model:             {model}\n")
         f.write(f"Queries/subject:   {NUM_EVAL_QUERIES}\n")
         f.write(f"Eval rounds (k):   {K_ROUND_EVAL}\n")
         f.write(f"Sampling seed:     {SEED}\n")
@@ -663,7 +664,7 @@ def _parse_args():
     parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1')
     parser.add_argument('--api_key', type=str, default=None)
     parser.add_argument('--eval_temperature', type=float, default=1.0)
-    parser.add_argument('--exec_max_tokens', type=int, default=8600)
+    parser.add_argument('--exec_max_tokens', type=int, default=16324)
     parser.add_argument('--provider_order', type=str, default="deepseek, alibaba")
     parser.add_argument('--no_exec_thinking', action='store_true', default=True)
     args = parser.parse_args()
@@ -747,13 +748,13 @@ def main():
         mod.EVAL_SEED = k
         _reset_exec_tokens(mod)
         if DATASET == "MATH":
-            round_result = run_math_eval(agent_system, mod.score_math, held_out)
+            round_result = run_math_eval(agent_system, mod.score_math, held_out, mod)
         elif DATASET == "MMLUPro":
             round_result = run_mmlu_pro_eval(agent_system, held_out, mod)
         elif DATASET == "FullStack":
             round_result = run_fullstack_eval(agent_system, held_out, mod)
         else:
-            round_result = run_mmlu_eval(agent_system, held_out, mod.format_multichoice_question)
+            round_result = run_mmlu_eval(agent_system, held_out, mod.format_multichoice_question, mod)
         round_tokens.append(_read_exec_tokens(mod))
         rounds.append(round_result)
     per_subject = _avg_rounds(rounds)
@@ -781,7 +782,7 @@ def main():
     print(f"\n  {'AVERAGE':<35s}  {avg:.3f} ± {avg_std:.3f}  avg_tokens/query: {avg_tokens_per_query:.1f}")
     print("=" * 70)
 
-    save_results(per_subject, per_subject_std, best_agent["name"], DATASET, avg_tokens_per_query)
+    save_results(per_subject, per_subject_std, best_agent["name"], DATASET, avg_tokens_per_query, model=args.eval_model)
 
 
 if __name__ == "__main__":

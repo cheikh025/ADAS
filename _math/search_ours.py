@@ -82,7 +82,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         temperature=EVAL_TEMPERATURE if temperature is None else temperature,
         max_tokens=EXEC_MAX_TOKENS, stop=None, response_format={"type": "json_object"},
         extra_body=extra if extra else None,
-        timeout=60,
+        timeout=120,
         **({"seed": EVAL_SEED} if EVAL_SEED is not None else {}),
     )
     if response.usage:
@@ -225,7 +225,7 @@ def search(args):
             print(f"Token budget reached: {total_tokens:,} >= {args.total_token_budget:,} — stopping search.")
             break
         print(f"============Generation {n + 1}=================")
-        system_prompt, prompt = get_prompt(archive)
+        system_prompt, prompt = get_prompt(archive[-5:])
         msg_list = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
@@ -403,45 +403,42 @@ def evaluate_forward_fn(args, forward_str):
     print(f"acc: {bootstrap_confidence_interval(acc_list)}")
     return acc_list
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_filename', type=str, default="../dataset/math_4subjects.jsonl")
+    parser.add_argument('--data_filename', type=str, default="dataset/math_4subjects.jsonl")
     parser.add_argument('--valid_size', type=int, default=60)  # 20 per subject x 3 subjects
     parser.add_argument('--test_size', type=int, default=0)
     parser.add_argument('--shuffle_seed', type=int, default=0)
     parser.add_argument('--n_repreat', type=int, default=1)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
     parser.add_argument('--max_workers', type=int, default=50)
-    parser.add_argument('--save_dir', type=str, default='../results/')
+    parser.add_argument('--save_dir', type=str, default='results/')
     parser.add_argument('--expr_name', type=str, default="math_ours_results")
     parser.add_argument('--n_generation', type=int, default=20)
     parser.add_argument('--total_token_budget', type=int, default=None,
                         help='Stop search early when total tokens (search + execution) exceed this limit. Default: no limit.')
     parser.add_argument('--debug_max', type=int, default=3)
-    parser.add_argument('--search_model', type=str, default='google/gemini-2.5-flash',
+    parser.add_argument('--search_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='Meta-LLM used to generate new agent designs')
-    parser.add_argument('--eval_model', type=str, default=None,
+    parser.add_argument('--eval_model', type=str, default='deepseek/deepseek-v4-flash',
                         help='LLM used inside forward() to answer questions (defaults to --search_model)')
     parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1',
-                        help='API base URL')
+                        help='API base URL (OpenAI, OpenRouter, Groq, etc.)')
     parser.add_argument('--api_key', type=str, default=None,
-                        help='API key (falls back to OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY)')
+                        help='API key (falls back to OPENROUTER_API_KEY / GROQ_API_KEY / OPENAI_API_KEY env vars)')
     parser.add_argument('--max_tokens', type=int, default=32768,
                         help='Max tokens for the search/meta LLM calls')
-    parser.add_argument('--exec_max_tokens', type=int, default=8600,
+    parser.add_argument('--exec_max_tokens', type=int, default=16000,
                         help='Max tokens for exec LLM calls inside forward()')
-    parser.add_argument('--search_temperature', type=float, default=0.8,
-                        help='Temperature for the meta-LLM (search/reflexion calls)')
-    parser.add_argument('--eval_temperature', type=float, default=1.0,
-                        help='Temperature for agent LLM calls during evaluation')
-    parser.add_argument('--provider_order', type=str, default=None,
+    parser.add_argument('--search_temperature', type=float, default=0.8)
+    parser.add_argument('--eval_temperature', type=float, default=1.0)
+    parser.add_argument('--provider_order', type=str, default="alibaba, deepseek",
                         help='Comma-separated OpenRouter provider order for the exec LLM, e.g. "Google Vertex,Together"')
-    parser.add_argument('--no_exec_thinking', action='store_true', default=False,
+    parser.add_argument('--no_exec_thinking', action='store_true', default=True,
                         help='Disable thinking/reasoning for the exec LLM (passes reasoning.effort=none via extra_body)')
-    parser.add_argument('--search_provider_order', type=str, default=None,
+    parser.add_argument('--search_provider_order', type=str, default="alibaba, deepseek",
                         help='Comma-separated OpenRouter provider order for the search/meta LLM, e.g. "novita,Together"')
-    parser.add_argument('--search_thinking', type=str, default=None, choices=['none', 'medium', 'high'],
+    parser.add_argument('--search_thinking', type=str, default='high', choices=['none', 'medium', 'high'],
                         help='reasoning.effort for the search/meta LLM (none/medium/high). Default: no override')
 
     args = parser.parse_args()
@@ -479,3 +476,4 @@ if __name__ == "__main__":
     if args.test_size > 0:
         SEARCHING_MODE = False
         evaluate(args)
+
