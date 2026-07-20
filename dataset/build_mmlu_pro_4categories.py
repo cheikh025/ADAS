@@ -18,8 +18,8 @@ import pandas as pd
 from datasets import load_dataset
 
 CATEGORIES = [
-    "law",
-    "history",
+    "physics",
+    "economics",
     "philosophy",
     "engineering",
 ]

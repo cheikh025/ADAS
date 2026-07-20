@@ -50,6 +50,11 @@ python {DOMAIN}/search.py
 
 Replace `{DOMAIN}` with the specific domain folder name {`_arc`, `_drop`, `_mgsm`, ...} to run the experiment for.
 
+The ReMAS-compatible integrations include SciCode (`_scicode/search_ours.py`)
+and Mind2Web/Web2Mind (`_mind2web/search_ours.py`). See
+[how_to_run.md](how_to_run.md) for reproducible official-data reconstruction,
+search, and fixed held-out evaluation.
+
 ### Customizing Meta Agent Search for New Domains
 
 You can easily adapt the code to search for new domains. To do so, follow these steps:

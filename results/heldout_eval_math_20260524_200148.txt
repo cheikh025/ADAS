@@ -1,0 +1,17 @@
+======================================================================
+ADAS HELD-OUT EVALUATION — MATH
+======================================================================
+Agent:             Debate and Consensus
+Model:             google/gemini-3.1-flash-lite
+Queries/subject:   100
+Eval rounds (k):   1
+Sampling seed:     99
+Date:              20260524_200148
+----------------------------------------------------------------------
+
+  Number Theory                        0.9100 ± 0.0000
+  Precalculus                          0.7200 ± 0.0000
+  Counting & Probability               0.9100 ± 0.0000
+
+  AVERAGE                              0.8467 ± 0.0000  avg_tokens/query: 3315.3
+======================================================================

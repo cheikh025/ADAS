@@ -1,0 +1,14 @@
+{
+    "search": {
+        "total_tokens": 1129172,
+        "input_tokens": 846517,
+        "output_tokens": 282655
+    },
+    "execution": {
+        "total_tokens": 30882923,
+        "input_tokens": 24730592,
+        "output_tokens": 6152331
+    },
+    "avg_execution_tokens_per_question": 24510.26,
+    "total_questions_evaluated": 1260
+}

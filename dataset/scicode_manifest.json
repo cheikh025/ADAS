@@ -1,0 +1,109 @@
+{
+  "dataset": "SciCode1/SciCode",
+  "dataset_revision": "4510f6a6aa27c43fad7b43da2c59602a86e88480",
+  "split_seed": 42,
+  "heldout_seed": 99,
+  "search_ids": {
+    "mathematics": [
+      "40",
+      "31",
+      "18"
+    ],
+    "physics": [
+      "19",
+      "73",
+      "67"
+    ],
+    "material_science": [
+      "36",
+      "80",
+      "35"
+    ]
+  },
+  "heldout_ids": {
+    "mathematics": [
+      "24",
+      "5",
+      "3",
+      "78",
+      "54",
+      "9",
+      "74",
+      "29",
+      "1",
+      "63"
+    ],
+    "physics": [
+      "6",
+      "37",
+      "8",
+      "70",
+      "48",
+      "59",
+      "72",
+      "58",
+      "45",
+      "49"
+    ],
+    "material_science": [
+      "47",
+      "64",
+      "21",
+      "77",
+      "42",
+      "39",
+      "34",
+      "27",
+      "79",
+      "51"
+    ]
+  },
+  "search_record_hashes": {
+    "40": "1ea99b641c926bdf127a8b1a9f17fd3a866d56898ba89d2a3e5aa81f5edb5aa4",
+    "31": "ba6355c8295362bc48a3bfc3a972d227b3514ac626ce8a561e702b04f8b2072c",
+    "18": "b0d39b77f146de363429049cac2062738ef6e5891e730ee66ccf94d22d17cc4c",
+    "19": "e961d7d379d7d326bdd34334838b17d4a6fcbb7c97f96b13e33b29ae67babd9c",
+    "73": "509ad7eab8f1520983f79ebef2a45a67c71662f5229c8016010ae757e8447e3d",
+    "67": "443d0e0f78d06dd4ac7abf6f69f9911e6bba3a199e8f862c214d48b6c935839d",
+    "36": "9c615a942f9874b82767e998f773b648d2946a38af6f7ef6d65ff243fb3918ad",
+    "80": "35fa7a981b4fb0941be1f3aa78d4a7eb6cb2141c9e8d38c5350653d9cb6eeac8",
+    "35": "42e2e93f80aef07769cb35abdc9aa85b243f25482e70fbe4c7d60d1306d63635"
+  },
+  "heldout_record_hashes": {
+    "24": "9efa754a51547eb0c716a8f2cb0b769784106a14c839ae103f3b99cf93ca2b36",
+    "5": "2502db9ace6990e48be2765989f2ca0d104b9ea44a18cf6c09a574caf271ecff",
+    "3": "266d51160b7b4ba0e947d4cc599568c30a022e82f031062a9efe5bcbb2b9e79e",
+    "78": "5862427865c77a32b76e6c0690c60b69c4b61630750ce020d0881e49fab44b0b",
+    "54": "ca1849363c2daa46cb9848a6b110946530d95ebcd97a15e1a8b11960dda11f3c",
+    "9": "dc338591c15bc16a66bb8cb85076b00c8ca2aec42b91d884d6bbc18ea753e4ee",
+    "74": "8d4a5de612f33f961595b0d27ae029046d851321a7436cdd8887784fd521059c",
+    "29": "b73afcaa7e446b05d4e40c3e0ee8392d5e0b8d3a2dc27c92653c3c9cf1777270",
+    "1": "db1ab66680dfc4f6b184a99d7670a202dd89b55321fcc2eb24dfcacf79560c02",
+    "63": "f944a214c9ec2d035b9c2ad62a47ab526d85b2e58b63a09ee90b9748eace1ebb",
+    "6": "d8fa7c170f95e5eb2afe94c7437cba7220718807490cd7d4cce963717e23c597",
+    "37": "7d363cb96f72f570b6c6e9fdfbe2ba2817e6c14908641d046fbf808edf235180",
+    "8": "db74a8f3e6e81860cd8af573c32bd88ffeed524c252107b1ad3d3ef68f06a48a",
+    "70": "56341c6abfe7780f84a90ac8d96b96638d56d60f2a8aab151af923686c2b48db",
+    "48": "a8f32feafa69ff98414155609445c2423afe05b18a047eb8db150c8bcadaf104",
+    "59": "96098fdbc7de3d6e77c1e4ba3a3e1e6c7cadff4ce51bf67b273ffb57c419a09d",
+    "72": "fc78a7965388184d8181f707e41d0cc2ebcb5e56604b09d2fa457904211d1fb0",
+    "58": "85cf7785fb7565e7c419fae7eede1d7e74146d639babc2c9d34a96f64f4f2b92",
+    "45": "56b807f31a9988a820447a74dbfc2015d83aadfd87847e656ab04db91f26b8f1",
+    "49": "0f65e4bd99e1dc55f6b9391d7c9c34f3bf239cd7e4257548b4d9f2255b8399c1",
+    "47": "fc57b1f453aaaec8e43f06217c8d41ee955ae1448b97c7228fa219e26d7eb460",
+    "64": "a8bc1ff1157e6dad0fd2c9aa69889a9f36826c78b0e4d594609e20e3312cc56d",
+    "21": "46cf1b259871716d85d6c53acabd8b8451dd6807745ff5907f87e5875f9cbabb",
+    "77": "fa2e84811a2c6728a638dc462f1d6dee801a21cf8e3fc624fa24e7c00ddca6a2",
+    "42": "14a9329177a02d23a1969efca51fc234cbc9dc2219b9f3bda52f9816b0094fe6",
+    "39": "7275e6d5c56563c700db17f0d94f892ccb13d92129206e7a7005286062acf291",
+    "34": "e4a32834c2d6139b11faffcd924a6002afb6d76ace0ae5d950f47c876015f700",
+    "27": "0b22639830437e44941d40fa56cccb4cab6a9bb12fdf527c167b2d113b742580",
+    "79": "1071530679d40f4db5b1792f104c38dee43f46e79ab4baa1997969262813f348",
+    "51": "894bb27af5b191cbbf450bb1c0db70a6ffc0a12093aa1908a2185b3f0079466f"
+  },
+  "reference_step_hashes": {
+    "13.6": "795a2b57c2d9bb12ca4eaf16d6b8e1f202015a89a886628858abf42a1b18a94e",
+    "62.1": "bc9931d88a7d5950091b72a996a25b8be6c936fd136b01005e22c3d45b0008a2",
+    "76.3": "4758300d96ea726cdc0fbf749f1bc437030d2a3e8b43bde232ecdeaf636cd367"
+  }
+}

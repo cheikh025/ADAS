@@ -44,11 +44,13 @@ load_dotenv()
 _ADAS_DIR  = Path(__file__).parent.resolve()
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
-DATASET          = "MATH"   # "MATH", "MMLU", or "MMLUPro"
+DATASET          = "MATH"   # "MATH", "MMLU", "MMLUPro", "FullStack", "SciCode", or "Mind2Web"
 NUM_EVAL_QUERIES = 100     # held-out queries per subject
 MAX_WORKERS      = 50       # parallel threads
 SEED             = 99       # sampling seed (training used 42)
 K_ROUND_EVAL     = 3       # number of eval rounds (scores averaged); matches MAS_pro
+SCICODE_K_ROUND_EVAL = 1   # fixed ReMAS held-out protocol
+MIND2WEB_K_ROUND_EVAL = 1  # fixed ReMAS held-out protocol
 # ──────────────────────────────────────────────────────────────────────────────
 
 FULLSTACK_SUBJECTS = [
@@ -75,11 +77,15 @@ MMLU_PRO_SUBJECTS = [
     "philosophy",
     "engineering",
 ]
+SCICODE_FIELDS = ["mathematics", "physics", "material_science"]
+MIND2WEB_DOMAINS = ["travel", "shopping", "entertainment"]
 MATH_LEVEL = "Level 5"
 
 MATH_TRAIN_JSONL        = _ADAS_DIR / "dataset/math_4subjects.jsonl"
 MMLU_TRAIN_CSV          = _ADAS_DIR / "dataset/mmlu_4subjects.csv"
 FULLSTACK_TRAIN_JSONL   = _ADAS_DIR / "dataset/fullstack_subset.jsonl"
+SCICODE_TEST_JSONL      = _ADAS_DIR / "dataset/scicode_test.jsonl"
+MIND2WEB_TEST_JSONL     = _ADAS_DIR / "dataset/mind2web_test.jsonl"
 MATH_RAW_TEST_DIR       = _ADAS_DIR / "data/math_hf_cache/MATH/test"
 MMLU_HF_CACHE           = _ADAS_DIR / "data/mmlu_hf_cache"
 MMLU_PRO_HF_CACHE       = _ADAS_DIR / "data/mmlu_pro_hf_cache"
@@ -93,6 +99,8 @@ MATH_ARCHIVE      = _ADAS_DIR / "results/math_ours_results_run_archive.json"
 MMLU_ARCHIVE      = _ADAS_DIR / "results/mmlu_ours_results_run_archive.json"
 MMLU_PRO_ARCHIVE  = _ADAS_DIR / "results/mmlu_pro_ours_results_run_archive.json"
 FULLSTACK_ARCHIVE = _ADAS_DIR / "results/fullstack_ours_results_run_archive.json"
+SCICODE_ARCHIVE   = _ADAS_DIR / "results/scicode_ours_results_run_archive.json"
+MIND2WEB_ARCHIVE  = _ADAS_DIR / "results/mind2web_ours_results_run_archive.json"
 
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
 LETTER_TO_INDEX  = {"A": 0, "B": 1, "C": 2, "D": 3}
@@ -121,7 +129,13 @@ def find_best_agent(archive_path: Path) -> dict:
             f"No evolved agents found in {archive_path}. "
             "All entries have generation='initial'. Run the ADAS search first."
         )
-    best = max(candidates, key=lambda a: _parse_median(a["fitness"]))
+    def fitness_value(agent: dict) -> float:
+        score = agent.get("fitness_score")
+        if isinstance(score, (int, float)):
+            return 100.0 * float(score)
+        return _parse_median(str(agent.get("fitness", "")))
+
+    best = max(candidates, key=fitness_value)
     print(f"Best agent: gen={best['generation']}, name={best['name']}")
     print(f"  Fitness: {best['fitness']}")
     return best
@@ -143,6 +157,10 @@ def load_search_module(dataset: str, args):
         module_dir = _ADAS_DIR / "_fullstack"
     elif dataset == "MMLUPro":
         module_dir = _ADAS_DIR / "_mmlu_pro"
+    elif dataset == "SciCode":
+        module_dir = _ADAS_DIR / "_scicode"
+    elif dataset == "Mind2Web":
+        module_dir = _ADAS_DIR / "_mind2web"
     else:
         module_dir = _ADAS_DIR / "_mmlu"
     sys.path.insert(0, str(module_dir))
@@ -166,6 +184,12 @@ def load_search_module(dataset: str, args):
     mod.EXEC_NO_THINKING = args.no_exec_thinking
     mod.PROVIDER_ROUTING = {"order": [p.strip() for p in args.provider_order.split(",")], "allow_fallbacks": True} if args.provider_order else None
     mod.SEARCHING_MODE = True
+    if dataset == "Mind2Web":
+        mod.PROVIDER_ROUTING = mod.mind2web_provider_routing(
+            args.base_url, mod.PROVIDER_ROUTING
+        )
+        if "openrouter.ai" in args.base_url.lower():
+            mod.EXEC_NO_THINKING = True
     return mod
 
 
@@ -415,6 +439,24 @@ def build_fullstack_heldout(rng: random.Random) -> List[dict]:
     return records
 
 
+def build_scicode_heldout() -> List[dict]:
+    """Load the frozen 30 complete ReMAS-compatible main problems directly."""
+    from _scicode.scicode_runtime import load_scicode_records
+
+    records = load_scicode_records(SCICODE_TEST_JSONL, "heldout")
+    print("  SciCode: 30 fixed main problems (10 per field; no resampling)")
+    return records
+
+
+def build_mind2web_heldout() -> List[dict]:
+    """Load the frozen 300-task ReMAS-compatible held-out proxy directly."""
+    from _mind2web.mind2web_runtime import load_mind2web_records
+
+    records = load_mind2web_records(MIND2WEB_TEST_JSONL, "heldout")
+    print("  Mind2Web: 300 fixed tasks (100 per domain; no resampling)")
+    return records
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -585,6 +627,34 @@ def run_fullstack_eval(agent_system, held_out: List[dict], mod) -> Dict[str, flo
     return {s: (sum(v) / len(v) if v else 0.0) for s, v in per_category.items()}
 
 
+def run_scicode_eval(held_out: List[dict], mod, args):
+    """Run full main-problem trajectories with sequential subproblem context."""
+    from _scicode.scicode_runtime import evaluate_scicode
+
+    return evaluate_scicode(
+        held_out,
+        mod.AgentSystem,
+        lambda prompt: mod.Info("task", "User", prompt, -1),
+        h5py_file=args.scicode_h5py_file,
+        max_workers=args.scicode_max_workers,
+        evaluation_timeout=args.scicode_evaluation_timeout,
+        description="SciCode held-out evaluation",
+    )
+
+
+def run_mind2web_eval(held_out: List[dict], mod, args):
+    from _mind2web.mind2web_runtime import evaluate_mind2web
+
+    return evaluate_mind2web(
+        held_out,
+        mod.AgentSystem,
+        lambda prompt: mod.Info("task", "User", prompt, -1),
+        max_task_workers=args.mind2web_max_task_workers,
+        max_llm_calls=args.mind2web_max_llm_calls,
+        description="Mind2Web held-out evaluation",
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # K-round averaging
 # ─────────────────────────────────────────────────────────────────────────────
@@ -617,7 +687,10 @@ def _read_exec_tokens(mod) -> int:
 # Results saving
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_results(per_subject: dict, per_subject_std: dict, agent_name: str, dataset: str, avg_tokens_per_query: float = 0.0, model: str = ""):
+def save_results(per_subject: dict, per_subject_std: dict, agent_name: str,
+                 dataset: str, avg_tokens_per_query: float = 0.0,
+                 model: str = "", diagnostics: dict | None = None,
+                 eval_rounds: int = K_ROUND_EVAL):
     out_dir = _ADAS_DIR / "results"
     out_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -629,6 +702,10 @@ def save_results(per_subject: dict, per_subject_std: dict, agent_name: str, data
         subjects = MMLU_PRO_SUBJECTS
     elif dataset == "FullStack":
         subjects = FULLSTACK_SUBJECTS
+    elif dataset == "SciCode":
+        subjects = SCICODE_FIELDS
+    elif dataset == "Mind2Web":
+        subjects = MIND2WEB_DOMAINS
     else:
         subjects = MMLU_SUBJECTS
     avg = sum(per_subject[s] for s in subjects) / len(subjects)
@@ -640,14 +717,38 @@ def save_results(per_subject: dict, per_subject_std: dict, agent_name: str, data
         f.write("=" * 70 + "\n")
         f.write(f"Agent:             {agent_name}\n")
         f.write(f"Model:             {model}\n")
-        f.write(f"Queries/subject:   {NUM_EVAL_QUERIES}\n")
-        f.write(f"Eval rounds (k):   {K_ROUND_EVAL}\n")
+        queries_per_subject = (
+            10 if dataset == "SciCode"
+            else 100 if dataset == "Mind2Web"
+            else NUM_EVAL_QUERIES
+        )
+        f.write(f"Queries/subject:   {queries_per_subject}\n")
+        f.write(f"Eval rounds (k):   {eval_rounds}\n")
         f.write(f"Sampling seed:     {SEED}\n")
         f.write(f"Date:              {timestamp}\n")
         f.write("-" * 70 + "\n\n")
         for s in subjects:
             f.write(f"  {s:<35s}  {per_subject[s]:.4f} ± {per_subject_std[s]:.4f}\n")
-        f.write(f"\n  {'AVERAGE':<35s}  {avg:.4f} ± {avg_std:.4f}  avg_tokens/query: {avg_tokens_per_query:.1f}\n")
+        token_unit = (
+            "subproblem" if dataset == "SciCode"
+            else "action" if dataset == "Mind2Web"
+            else "query"
+        )
+        f.write(f"\n  {'AVERAGE':<35s}  {avg:.4f} ± {avg_std:.4f}  avg_tokens/{token_unit}: {avg_tokens_per_query:.1f}\n")
+        if diagnostics and dataset == "SciCode":
+            f.write("\nSciCode diagnostics:\n")
+            f.write(f"  Global subproblem pass rate: {diagnostics['global_subproblem_pass_rate']:.4f}\n")
+            f.write(f"  Main-problem resolve rate:   {diagnostics['main_problem_resolve_rate']:.4f}\n")
+            f.write(f"  Passed subproblems:          {diagnostics['passed_subproblems']}/{diagnostics['total_subproblems']}\n")
+            f.write(f"  Resolved main problems:      {diagnostics['passed_main_problems']}/{diagnostics['total_main_problems']}\n")
+        elif diagnostics and dataset == "Mind2Web":
+            f.write("\nMind2Web diagnostics:\n")
+            f.write(f"  Task-macro element accuracy: {diagnostics['macro_element_acc']:.4f}\n")
+            f.write(f"  Task-macro action F1:        {diagnostics['macro_action_f1']:.4f}\n")
+            f.write(f"  Global task-macro Step SR:   {diagnostics['macro_step_success_rate']:.4f}\n")
+            f.write(f"  Task success rate:           {diagnostics['task_success_rate']:.4f}\n")
+            f.write(f"  Candidate recall:            {diagnostics['macro_candidate_recall']:.4f}\n")
+            f.write(f"  Tasks/actions:               {diagnostics['n_tasks']}/{diagnostics['n_steps']}\n")
         f.write("=" * 70 + "\n")
 
     print(f"\nResults saved to: {out_file}")
@@ -667,6 +768,15 @@ def _parse_args():
     parser.add_argument('--exec_max_tokens', type=int, default=16324)
     parser.add_argument('--provider_order', type=str, default="deepseek, alibaba")
     parser.add_argument('--no_exec_thinking', action='store_true', default=True)
+    parser.add_argument('--scicode_h5py_file', type=str,
+                        default=os.environ.get('SCICODE_H5_PATH'),
+                        help='Official SciCode test_data.h5 (or set SCICODE_H5_PATH)')
+    parser.add_argument('--scicode_evaluation_timeout', type=int, default=1800)
+    parser.add_argument('--scicode_max_workers', type=int, default=3,
+                        help='Concurrent complete SciCode main-problem trajectories')
+    parser.add_argument('--mind2web_max_task_workers', type=int, default=50)
+    parser.add_argument('--mind2web_max_llm_calls', type=int, default=32,
+                        help='Global concurrent Mind2Web action-call limit')
     args = parser.parse_args()
     if args.api_key is None:
         url = args.base_url.lower()
@@ -692,7 +802,12 @@ def main():
 
     print("=" * 70)
     print(f"ADAS HELD-OUT EVALUATION  —  {DATASET}")
-    print(f"Queries/subject: {NUM_EVAL_QUERIES}  |  seed: {SEED}")
+    query_count = (
+        10 if DATASET == "SciCode"
+        else 100 if DATASET == "Mind2Web"
+        else NUM_EVAL_QUERIES
+    )
+    print(f"Queries/subject: {query_count}  |  seed: {SEED}")
     print("=" * 70)
 
     # 1. Find best agent
@@ -702,6 +817,10 @@ def main():
         archive_path = MMLU_PRO_ARCHIVE
     elif DATASET == "FullStack":
         archive_path = FULLSTACK_ARCHIVE
+    elif DATASET == "SciCode":
+        archive_path = SCICODE_ARCHIVE
+    elif DATASET == "Mind2Web":
+        archive_path = MIND2WEB_ARCHIVE
     else:
         archive_path = MMLU_ARCHIVE
     best_agent = find_best_agent(archive_path)
@@ -735,16 +854,31 @@ def main():
         held_out = build_mmlu_pro_heldout(rng)
     elif DATASET == "FullStack":
         held_out = build_fullstack_heldout(rng)
+    elif DATASET == "SciCode":
+        held_out = build_scicode_heldout()
+    elif DATASET == "Mind2Web":
+        held_out = build_mind2web_heldout()
     else:
         held_out = build_mmlu_heldout(rng)
     print(f"Total held-out examples: {len(held_out)}")
 
-    # 4. Run evaluation — K_ROUND_EVAL rounds, scores averaged (matches MAS_pro)
-    print(f"\nRunning evaluation ({K_ROUND_EVAL} rounds × {len(held_out)} queries, max_workers={MAX_WORKERS}) …")
+    # 4. Trajectory benchmarks use their fixed one-round ReMAS protocols.
+    if DATASET == "SciCode":
+        eval_rounds = SCICODE_K_ROUND_EVAL
+        worker_count = args.scicode_max_workers
+    elif DATASET == "Mind2Web":
+        eval_rounds = MIND2WEB_K_ROUND_EVAL
+        worker_count = args.mind2web_max_llm_calls
+    else:
+        eval_rounds = K_ROUND_EVAL
+        worker_count = MAX_WORKERS
+    print(f"\nRunning evaluation ({eval_rounds} rounds × {len(held_out)} queries, max_workers={worker_count}) …")
     rounds = []
     round_tokens: List[int] = []
-    for k in range(K_ROUND_EVAL):
-        print(f"  Round {k + 1}/{K_ROUND_EVAL}")
+    scicode_metrics: List[dict] = []
+    mind2web_metrics: List[dict] = []
+    for k in range(eval_rounds):
+        print(f"  Round {k + 1}/{eval_rounds}")
         mod.EVAL_SEED = k
         _reset_exec_tokens(mod)
         if DATASET == "MATH":
@@ -753,6 +887,17 @@ def main():
             round_result = run_mmlu_pro_eval(agent_system, held_out, mod)
         elif DATASET == "FullStack":
             round_result = run_fullstack_eval(agent_system, held_out, mod)
+        elif DATASET == "SciCode":
+            evaluation = run_scicode_eval(held_out, mod, args)
+            round_result = evaluation.metrics["field_subproblem_pass_rates"]
+            scicode_metrics.append(evaluation.metrics)
+        elif DATASET == "Mind2Web":
+            evaluation = run_mind2web_eval(held_out, mod, args)
+            round_result = {
+                scenario_id: values["macro_step_success_rate"]
+                for scenario_id, values in evaluation.metrics["scenarios"].items()
+            }
+            mind2web_metrics.append(evaluation.metrics)
         else:
             round_result = run_mmlu_eval(agent_system, held_out, mod.format_multichoice_question, mod)
         round_tokens.append(_read_exec_tokens(mod))
@@ -760,7 +905,13 @@ def main():
     per_subject = _avg_rounds(rounds)
     per_subject_std = _std_rounds(rounds, per_subject)
     total_tokens   = sum(round_tokens)
-    avg_tokens_per_query = total_tokens / (K_ROUND_EVAL * len(held_out)) if held_out else 0.0
+    if DATASET == "SciCode":
+        token_denominator = sum(m["total_subproblems"] for m in scicode_metrics)
+    elif DATASET == "Mind2Web":
+        token_denominator = sum(m["n_steps"] for m in mind2web_metrics)
+    else:
+        token_denominator = eval_rounds * len(held_out)
+    avg_tokens_per_query = total_tokens / token_denominator if token_denominator else 0.0
 
     # 5. Print + save
     if DATASET == "MATH":
@@ -769,20 +920,46 @@ def main():
         subjects = MMLU_PRO_SUBJECTS
     elif DATASET == "FullStack":
         subjects = FULLSTACK_SUBJECTS
+    elif DATASET == "SciCode":
+        subjects = SCICODE_FIELDS
+    elif DATASET == "Mind2Web":
+        subjects = MIND2WEB_DOMAINS
     else:
         subjects = MMLU_SUBJECTS
     avg = sum(per_subject[s] for s in subjects) / len(subjects)
     avg_std = math.sqrt(sum(per_subject_std[s] ** 2 for s in subjects)) / len(subjects)
 
     print("\n" + "=" * 70)
-    print(f"RESULTS  —  {DATASET}  ({best_agent['name']})  [{K_ROUND_EVAL} rounds, mean ± std]")
+    print(f"RESULTS  —  {DATASET}  ({best_agent['name']})  [{eval_rounds} rounds, mean ± std]")
     print("=" * 70)
     for s in subjects:
         print(f"  {s:<35s}  {per_subject[s]:.3f} ± {per_subject_std[s]:.3f}")
-    print(f"\n  {'AVERAGE':<35s}  {avg:.3f} ± {avg_std:.3f}  avg_tokens/query: {avg_tokens_per_query:.1f}")
+    token_unit = (
+        "subproblem" if DATASET == "SciCode"
+        else "action" if DATASET == "Mind2Web"
+        else "query"
+    )
+    print(f"\n  {'AVERAGE':<35s}  {avg:.3f} ± {avg_std:.3f}  avg_tokens/{token_unit}: {avg_tokens_per_query:.1f}")
+    diagnostics = (
+        scicode_metrics[0] if scicode_metrics
+        else mind2web_metrics[0] if mind2web_metrics
+        else None
+    )
+    if diagnostics and DATASET == "SciCode":
+        print(f"  Global subproblem pass rate: {diagnostics['global_subproblem_pass_rate']:.3f}")
+        print(f"  Main-problem resolve rate:   {diagnostics['main_problem_resolve_rate']:.3f}")
+    elif diagnostics and DATASET == "Mind2Web":
+        print(f"  Task-macro element accuracy: {diagnostics['macro_element_acc']:.3f}")
+        print(f"  Task-macro action F1:        {diagnostics['macro_action_f1']:.3f}")
+        print(f"  Task success rate:           {diagnostics['task_success_rate']:.3f}")
+        print(f"  Candidate recall:            {diagnostics['macro_candidate_recall']:.3f}")
     print("=" * 70)
 
-    save_results(per_subject, per_subject_std, best_agent["name"], DATASET, avg_tokens_per_query, model=args.eval_model)
+    save_results(
+        per_subject, per_subject_std, best_agent["name"], DATASET,
+        avg_tokens_per_query, model=args.eval_model, diagnostics=diagnostics,
+        eval_rounds=eval_rounds,
+    )
 
 
 if __name__ == "__main__":

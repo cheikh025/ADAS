@@ -1,8 +1,12 @@
 """
 Build ADAS-compatible JSONL with the same MATH subset used by MAS and AFlow.
 
-Same 4 subjects, Level 5, seed=42, 10 per subject = 40 total.
-Downloads from modelscope (same source as MAS optimizer).
+Subjects: Algebra, Geometry
+Level: Level 5
+Seed: 42
+N/subject: 20
+Split: test
+
 Output: dataset/math_4subjects.jsonl
 
 Run:
@@ -18,54 +22,63 @@ from pathlib import Path
 import requests
 
 SUBJECTS = [
-    "Number Theory",
-    "Precalculus",
-    "Counting & Probability",
+    "Algebra",
+    "Geometry",
 ]
+
 LEVEL = "Level 5"
 SEED = 42
 N_PER_SUBJECT = 20
 
 OUTPUT_PATH = Path(__file__).parent / "math_4subjects.jsonl"
-CACHE_DIR   = Path(__file__).parent.parent / "data" / "math_hf_cache"
+CACHE_DIR = Path(__file__).parent.parent / "data" / "math_hf_cache"
 MATH_URL = "https://www.modelscope.cn/datasets/opencompass/competition_math/resolve/master/data/MATH.zip"
 
 
-def download_and_extract():
+def download_and_extract() -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     zip_path = CACHE_DIR / "MATH.zip"
 
     if not zip_path.exists():
-        print(f"Downloading MATH data...")
-        r = requests.get(MATH_URL, stream=True)
-        r.raise_for_status()
-        with open(zip_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
+        print(f"Downloading MATH data from {MATH_URL} ...")
+        response = requests.get(MATH_URL, stream=True)
+        response.raise_for_status()
+
+        with zip_path.open("wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
 
-    print("Extracting...")
+    print("Extracting MATH.zip...")
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(CACHE_DIR)
-    zip_path.unlink()
+
+    zip_path.unlink(missing_ok=True)
 
 
-def load_test_split():
+def load_test_split() -> list[dict]:
     test_dir = CACHE_DIR / "MATH" / "test"
+
+    if not test_dir.exists():
+        raise FileNotFoundError(f"Expected MATH test folder not found: {test_dir}")
+
     records = []
-    for subject_dir in test_dir.iterdir():
+
+    for subject_dir in sorted(test_dir.iterdir(), key=lambda p: p.name):
         if not subject_dir.is_dir():
             continue
-        for jf in subject_dir.glob("*.json"):
-            with open(jf, "r", encoding="utf-8") as f:
-                ex = json.load(f)
-            records.append(ex)
+
+        for json_file in sorted(subject_dir.glob("*.json"), key=lambda p: p.name):
+            with json_file.open("r", encoding="utf-8") as f:
+                records.append(json.load(f))
+
     return records
 
 
-def main():
-    math_root = CACHE_DIR / "MATH"
-    if not math_root.exists():
+def main() -> None:
+    test_dir = CACHE_DIR / "MATH" / "test"
+
+    if not test_dir.exists():
         download_and_extract()
 
     all_data = load_test_split()
@@ -75,12 +88,21 @@ def main():
     rows = []
 
     for subject in SUBJECTS:
-        filtered = [
-            ex for ex in all_data
-            if ex.get("type") == subject and ex.get("level") == LEVEL
-        ]
+        filtered = sorted(
+            [
+                ex for ex in all_data
+                if ex.get("type") == subject and ex.get("level") == LEVEL
+            ],
+            key=lambda ex: ex["problem"],
+        )
+
         sampled = rng.sample(filtered, min(N_PER_SUBJECT, len(filtered)))
-        print(f"  {subject} ({LEVEL}): {len(filtered)} available → {len(sampled)} sampled")
+
+        print(
+            f"  {subject} ({LEVEL}): "
+            f"{len(filtered)} available -> {len(sampled)} sampled"
+        )
+
         for ex in sampled:
             rows.append({
                 "subject": subject,
@@ -90,13 +112,14 @@ def main():
                 "type": ex["type"],
             })
 
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    print(f"\nWrote {len(rows)} records → {OUTPUT_PATH}")
-
-    print(f"Full test data kept at {CACHE_DIR} (needed for held-out eval)")
+    print(f"\nWrote {len(rows)} records -> {OUTPUT_PATH}")
+    print(f"Full test data kept at {CACHE_DIR}")
 
 
 if __name__ == "__main__":
