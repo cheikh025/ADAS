@@ -18,10 +18,18 @@ from json_repair import repair_json
 
 try:
     from .scicode_prompt import get_init_archive, get_prompt, get_reflexion_prompt
-    from .scicode_runtime import evaluate_scicode, load_scicode_records
+    from .scicode_runtime import (
+        build_reasoning_extra_body,
+        evaluate_scicode,
+        load_scicode_records,
+    )
 except ImportError:
     from scicode_prompt import get_init_archive, get_prompt, get_reflexion_prompt
-    from scicode_runtime import evaluate_scicode, load_scicode_records
+    from scicode_runtime import (
+        build_reasoning_extra_body,
+        evaluate_scicode,
+        load_scicode_records,
+    )
 
 
 load_dotenv(override=False)
@@ -46,6 +54,8 @@ SEARCH_PROVIDER_ROUTING = None
 EXEC_NO_THINKING = True
 SEARCH_THINKING = "high"
 EVAL_SEED = None
+REASONING_BASE_URL = "https://openrouter.ai/api/v1"
+REASONING_BACKEND = "auto"
 
 _search_input_tokens = 0
 _search_output_tokens = 0
@@ -67,6 +77,32 @@ def _completion_kwargs(extra: dict | None) -> dict:
     return {"extra_body": extra} if extra else {}
 
 
+def configure_reasoning_backend(
+    base_url: str,
+    reasoning_backend: str = "auto",
+) -> None:
+    """Select the reasoning payload understood by the configured endpoint."""
+
+    global REASONING_BASE_URL, REASONING_BACKEND
+    REASONING_BASE_URL = str(base_url)
+    REASONING_BACKEND = reasoning_backend
+
+
+def reasoning_extra_body(
+    effort: str | None,
+    *,
+    thinking: bool | None,
+) -> dict:
+    """Build OpenRouter or ReMAS-local thinking controls without mixing them."""
+
+    return build_reasoning_extra_body(
+        REASONING_BASE_URL,
+        effort,
+        thinking=thinking,
+        reasoning_backend=REASONING_BACKEND,
+    )
+
+
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(msg, model, system_message, temperature=None):
     global _exec_input_tokens, _exec_output_tokens
@@ -74,7 +110,7 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
     if PROVIDER_ROUTING:
         extra["provider"] = PROVIDER_ROUTING
     if EXEC_NO_THINKING:
-        extra["reasoning"] = {"effort": "none"}
+        extra.update(reasoning_extra_body("none", thinking=False))
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -106,7 +142,12 @@ def get_json_response_from_gpt_reflect(messages, model, temperature=None):
     if SEARCH_PROVIDER_ROUTING:
         extra["provider"] = SEARCH_PROVIDER_ROUTING
     if SEARCH_THINKING is not None:
-        extra["reasoning"] = {"effort": SEARCH_THINKING}
+        extra.update(
+            reasoning_extra_body(
+                SEARCH_THINKING,
+                thinking=SEARCH_THINKING != "none",
+            )
+        )
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -447,6 +488,15 @@ def parse_args():
     parser.add_argument("--search_model", default="deepseek/deepseek-v4-flash")
     parser.add_argument("--eval_model", default=None)
     parser.add_argument("--base_url", default="https://openrouter.ai/api/v1")
+    parser.add_argument(
+        "--reasoning_backend",
+        choices=["auto", "openrouter", "local"],
+        default="auto",
+        help=(
+            "Reasoning request schema. Auto recognizes OpenRouter, localhost, "
+            "and the ReMAS local endpoint."
+        ),
+    )
     parser.add_argument("--api_key", default=None)
     parser.add_argument("--max_tokens", type=int, default=32768)
     parser.add_argument("--exec_max_tokens", type=int, default=16324)
@@ -470,6 +520,7 @@ def main() -> None:
 
     args = parse_args()
     api_key = _resolve_api_key(args)
+    configure_reasoning_backend(args.base_url, args.reasoning_backend)
     client = make_client(args.base_url, api_key)
     MODEL = args.eval_model or args.search_model
     SEARCH_TEMPERATURE = args.search_temperature

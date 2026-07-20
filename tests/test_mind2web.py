@@ -12,6 +12,7 @@ from _mind2web.mind2web_dom import Mind2WebDOMError, format_pruned_html
 from _mind2web.mind2web_runtime import (
     aggregate_results,
     build_action_prompt,
+    build_reasoning_extra_body,
     evaluate_action,
     evaluate_mind2web,
     mind2web_provider_routing,
@@ -71,6 +72,34 @@ class _PromptAgent:
 
 
 class Mind2WebProtocolTests(unittest.TestCase):
+    def test_reasoning_payload_matches_openrouter_and_local_backends(self):
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://openrouter.ai/api/v1", "none", thinking=False
+            ),
+            {"reasoning": {"effort": "none"}},
+        )
+
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://ai4news.rnd.huawei.com/model/v1",
+                "high",
+                thinking=True,
+            ),
+            {
+                "reasoning_effort": "high",
+                "chat_template_kwargs": {"thinking": True},
+            },
+        )
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://ai4news.rnd.huawei.com/model/v1",
+                "none",
+                thinking=False,
+            ),
+            {"chat_template_kwargs": {"thinking": False}},
+        )
+
     def test_openrouter_routing_matches_remas_and_is_scoped(self):
         fallback = {"order": ["other"], "allow_fallbacks": True}
         self.assertEqual(

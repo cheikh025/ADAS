@@ -184,6 +184,10 @@ def load_search_module(dataset: str, args):
     mod.EXEC_NO_THINKING = args.no_exec_thinking
     mod.PROVIDER_ROUTING = {"order": [p.strip() for p in args.provider_order.split(",")], "allow_fallbacks": True} if args.provider_order else None
     mod.SEARCHING_MODE = True
+    if hasattr(mod, "configure_reasoning_backend"):
+        mod.configure_reasoning_backend(
+            args.base_url, args.reasoning_backend
+        )
     if dataset == "Mind2Web":
         mod.PROVIDER_ROUTING = mod.mind2web_provider_routing(
             args.base_url, mod.PROVIDER_ROUTING
@@ -763,6 +767,8 @@ def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval_model', type=str, default='deepseek/deepseek-v4-flash')
     parser.add_argument('--base_url', type=str, default='https://openrouter.ai/api/v1')
+    parser.add_argument('--reasoning_backend', choices=['auto', 'openrouter', 'local'],
+                        default='auto', help='Reasoning request schema for the endpoint')
     parser.add_argument('--api_key', type=str, default=None)
     parser.add_argument('--eval_temperature', type=float, default=1.0)
     parser.add_argument('--exec_max_tokens', type=int, default=16324)

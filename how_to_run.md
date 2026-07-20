@@ -294,6 +294,14 @@ For OpenRouter, ADAS automatically matches the Mind2Web-specific ReMAS policy
 for optimizer and executor calls: DeepSeek only, fallbacks disabled, and
 reasoning effort `none`. This override is scoped to Mind2Web.
 
+For a non-OpenRouter local endpoint, ADAS instead mirrors ReMAS's local
+thinking controls: search uses `reasoning_effort` plus
+`chat_template_kwargs.thinking=true` (high by default), while execution sends
+`chat_template_kwargs.thinking=false`. Use `--search_thinking none` to disable
+local search thinking explicitly.
+For a local endpoint at an unrecognized hostname, add
+`--reasoning_backend local` explicitly.
+
 Each task is a complete human action trajectory, but each current action gets a
 fresh ADAS agent instance. Inputs are teacher-forced with only gold preceding
 actions; generated actions never change later inputs. Actions run independently

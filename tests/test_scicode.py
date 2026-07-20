@@ -11,6 +11,7 @@ import h5py
 from _scicode.scicode_evaluator import SciCodeEvaluator
 from _scicode.scicode_runtime import (
     aggregate_results,
+    build_reasoning_extra_body,
     build_step_prompt,
     extract_python_script,
     run_problem_trajectory,
@@ -57,6 +58,58 @@ class _PassingEvaluator:
 
 
 class SciCodeSpecTests(unittest.TestCase):
+    def test_reasoning_payload_matches_openrouter_and_local_backends(self):
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://openrouter.ai/api/v1", "high", thinking=True
+            ),
+            {"reasoning": {"effort": "high"}},
+        )
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://openrouter.ai/api/v1", "none", thinking=False
+            ),
+            {"reasoning": {"effort": "none"}},
+        )
+
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://ai4news.rnd.huawei.com/model/v1",
+                "high",
+                thinking=True,
+            ),
+            {
+                "reasoning_effort": "high",
+                "chat_template_kwargs": {"thinking": True},
+            },
+        )
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://ai4news.rnd.huawei.com/model/v1",
+                "none",
+                thinking=False,
+            ),
+            {"chat_template_kwargs": {"thinking": False}},
+        )
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://custom-model.example/v1",
+                "high",
+                thinking=True,
+                reasoning_backend="local",
+            ),
+            {
+                "reasoning_effort": "high",
+                "chat_template_kwargs": {"thinking": True},
+            },
+        )
+        self.assertEqual(
+            build_reasoning_extra_body(
+                "https://api.groq.com/openai/v1", "high", thinking=True
+            ),
+            {"reasoning": {"effort": "high"}},
+        )
+
     def test_frozen_ids_match_remas_and_do_not_overlap(self):
         self.assertEqual(
             ordered_pairs("search"),

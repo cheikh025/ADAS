@@ -48,6 +48,48 @@ def mind2web_provider_routing(base_url: str, fallback: Any = None):
     return fallback
 
 
+def uses_local_thinking_controls(
+    base_url: str,
+    reasoning_backend: str = "auto",
+) -> bool:
+    """Resolve whether to use the ReMAS local-endpoint request schema."""
+
+    if reasoning_backend not in {"auto", "openrouter", "local"}:
+        raise ValueError(f"Unsupported reasoning backend: {reasoning_backend!r}")
+    if reasoning_backend != "auto":
+        return reasoning_backend == "local"
+    url = str(base_url).lower()
+    return any(
+        marker in url
+        for marker in (
+            "ai4news.rnd.huawei.com",
+            "localhost",
+            "127.0.0.1",
+            "0.0.0.0",
+        )
+    )
+
+
+def build_reasoning_extra_body(
+    base_url: str,
+    effort: str | None,
+    *,
+    thinking: bool | None,
+    reasoning_backend: str = "auto",
+) -> dict[str, Any]:
+    """Return endpoint-specific reasoning controls matching ReMAS."""
+
+    if not uses_local_thinking_controls(base_url, reasoning_backend):
+        return {"reasoning": {"effort": effort}} if effort is not None else {}
+
+    extra: dict[str, Any] = {}
+    if effort not in (None, "none"):
+        extra["reasoning_effort"] = effort
+    if thinking is not None:
+        extra["chat_template_kwargs"] = {"thinking": thinking}
+    return extra
+
+
 def load_mind2web_records(path: str | Path, split: str) -> list[dict[str, Any]]:
     path = Path(path)
     if not path.is_file():
