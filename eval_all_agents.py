@@ -139,16 +139,26 @@ def find_best_agent(archive_path: Path) -> dict:
 
 
 def get_baseline_agents(archive_path: Path) -> List[dict]:
-    """Return initial-archive entries for the dataset-appropriate baseline names."""
+    """Return the dataset-appropriate canonical baseline definitions.
+
+    Mind2Web uses the current definitions from ``mind2web_prompt.py`` so a
+    completed search archive cannot silently keep stale baseline prompts during
+    held-out comparison. The searched best agent is still loaded from the
+    completed archive separately.
+    """
     if DATASET == "SciCode":
         names = SCICODE_BASELINE_NAMES
     elif DATASET == "Mind2Web":
         names = MIND2WEB_BASELINE_NAMES
+        from _mind2web.mind2web_prompt import get_init_archive
+
+        initial = {a["name"]: a for a in get_init_archive()}
     else:
         names = BASELINE_NAMES
-    with open(archive_path) as f:
-        archive = json.load(f)
-    initial = {a["name"]: a for a in archive if a.get("generation") == "initial"}
+    if DATASET != "Mind2Web":
+        with open(archive_path) as f:
+            archive = json.load(f)
+        initial = {a["name"]: a for a in archive if a.get("generation") == "initial"}
     selected = []
     for name in names:
         if name in initial:
