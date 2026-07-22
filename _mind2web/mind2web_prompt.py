@@ -37,14 +37,35 @@ INITIAL_ARCHIVE = [
         "name": "Web Action Self-Consistency",
         "code": """def forward(self, taskInfo):
     candidates = []
-    instruction = "Think step by step and independently choose the best listed candidate for the current step. Return one CLICK, TYPE, or SELECT action with the correct value."
-    for i in range(3):
+    valid_actions = []
+    approaches = [
+        "Focus first on the task and previous actions.",
+        "Focus first on matching the current page elements.",
+        "Check the operation and exact value especially carefully.",
+    ]
+    for i, approach in enumerate(approaches):
         policy = LLMAgentBase(['analysis', 'action'], 'Independent Web Policy', temperature=0.7)
-        analysis, action = policy([taskInfo], instruction, i)
-        candidates.extend([analysis, action])
+        try:
+            analysis, action = policy([taskInfo], approach + " Think step by step and independently choose the best listed candidate for the current step. Return one CLICK, TYPE, or SELECT action with the correct value.", i)
+            candidates.extend([analysis, action])
+            valid_actions.append(action)
+        except Exception:
+            continue
+    if not valid_actions:
+        raise RuntimeError("No self-consistency proposal returned a valid action.")
+    fallback = valid_actions[0]
+    fallback_count = 0
+    for candidate in valid_actions:
+        count = sum(other.content == candidate.content for other in valid_actions)
+        if count > fallback_count:
+            fallback = candidate
+            fallback_count = count
     judge = LLMAgentBase(['analysis', 'action'], 'Web Action Verifier', temperature=0.1)
-    analysis, action = judge([taskInfo] + candidates, "Compare the proposed actions with the task, previous actions, and page context. Choose the most consistent valid action and return its element, operation, and value.")
-    return action
+    try:
+        analysis, action = judge([taskInfo] + candidates, "Compare the proposed actions with the task, previous actions, and page context. Return a short analysis and one action object containing element, operation, and value.")
+        return action
+    except Exception:
+        return fallback
 """,
     },
     {
@@ -68,13 +89,23 @@ INITIAL_ARCHIVE = [
         "code": """def forward(self, taskInfo):
     roles = ['Page Understanding Agent', 'Task Planning Agent', 'Action Selection Agent']
     proposals = []
+    valid_actions = []
     for i, role in enumerate(roles):
         agent = LLMAgentBase(['analysis', 'action'], 'Web Debate Agent', role=role, temperature=0.5)
-        analysis, action = agent([taskInfo], "Think step by step and propose the best current action using one listed candidate. Choose CLICK, TYPE, or SELECT and include the correct value.", i)
-        proposals.extend([analysis, action])
+        try:
+            analysis, action = agent([taskInfo], "Think step by step and propose the best current action using one listed candidate. Return a short analysis and one action object containing element, operation, and value.", i)
+            proposals.extend([analysis, action])
+            valid_actions.append(action)
+        except Exception:
+            continue
+    if not valid_actions:
+        raise RuntimeError("No debate proposal returned a valid action.")
     judge = LLMAgentBase(['analysis', 'action'], 'Lead Web Policy', temperature=0.1)
-    analysis, action = judge([taskInfo] + proposals, "Compare the proposals, resolve disagreements using the task, previous actions, and page context, and return the best current action with element, operation, and value.")
-    return action
+    try:
+        analysis, action = judge([taskInfo] + proposals, "Compare the proposals and resolve disagreements using the task, previous actions, and page context. Return a short analysis and one action object containing element, operation, and value.")
+        return action
+    except Exception:
+        return valid_actions[0]
 """,
     },
     {

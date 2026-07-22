@@ -1,11 +1,9 @@
 """
-ADAS Comprehensive Held-out Evaluation
+ADAS Configured Held-out Evaluation
 
-Evaluates the following agents on the SAME fresh held-out queries:
-  1. Chain-of-Thought (CoT)
-  2. Self-Consistency with Chain-of-Thought (CoT-SC)
-  3. Self-Refine (Reflexion)
-  4. Best searched agent (highest median fitness from archive)
+Evaluates the dataset-specific agents configured below on the same held-out
+queries. Mind2Web is currently scoped to Self-Consistency and Debate so those
+two repaired baselines can be rerun without repeating completed evaluations.
 
 Supports DATASET = "MATH", "MMLU_PRO", "FullStack", "SciCode", or "Mind2Web"
 
@@ -97,11 +95,10 @@ SCICODE_BASELINE_NAMES = [
     "Triangulated Scientific Experts",
 ]
 MIND2WEB_BASELINE_NAMES = [
-    "Web Action Chain-of-Thought",
     "Web Action Self-Consistency",
-    "Web Action Reflexion",
     "Web Action Debate",
 ]
+MIND2WEB_INCLUDE_BEST = False
 
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
 _MMLU_PRO_L2I = {c: i for i, c in enumerate("ABCDEFGHIJ")}
@@ -728,7 +725,9 @@ def main():
 
     for entry in get_baseline_agents(archive_path):
         agents_to_run.append((entry["name"], entry["code"]))
-    if DATASET in {"SciCode", "Mind2Web"}:
+    if DATASET == "SciCode" or (
+        DATASET == "Mind2Web" and MIND2WEB_INCLUDE_BEST
+    ):
         best = find_best_agent(archive_path)
         agents_to_run.append((f"Best searched: {best['name']}", best["code"]))
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import secrets
 import threading
@@ -37,10 +38,12 @@ except ImportError:
 
 load_dotenv(override=False)
 
+logger = logging.getLogger(__name__)
+
 Info = namedtuple("Info", ["name", "author", "content", "iteration_idx"])
 FORMAT_INST = lambda fields: (
     "Reply EXACTLY with the following JSON format.\n"
-    f"{fields}\n"
+    f"{json.dumps(fields, ensure_ascii=False)}\n"
     "Do not omit fields. Return one well-formed JSON object."
 )
 ROLE_DESC = lambda role: f"You are a {role}."
@@ -59,6 +62,7 @@ SEARCH_THINKING = "high"
 EVAL_SEED = None
 REASONING_BASE_URL = "https://openrouter.ai/api/v1"
 REASONING_BACKEND = "auto"
+EXEC_FORMAT_ATTEMPTS = 2
 
 _search_input_tokens = 0
 _search_output_tokens = 0
@@ -132,10 +136,16 @@ def get_json_response_from_gpt(msg, model, system_message, temperature=None):
         with _exec_token_lock:
             _exec_input_tokens += response.usage.prompt_tokens
             _exec_output_tokens += response.usage.completion_tokens
-    parsed = repair_json(response.choices[0].message.content or "", return_objects=True)
+    raw_content = response.choices[0].message.content or ""
+    parsed = repair_json(raw_content, return_objects=True)
     if isinstance(parsed, list):
         parsed = next((item for item in parsed if isinstance(item, dict)), {})
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict) or not parsed:
+        raise ValueError(
+            "LLM returned unparseable or empty JSON: "
+            f"{raw_content[:300]!r}"
+        )
+    return parsed
 
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
@@ -216,26 +226,124 @@ class LLMAgentBase:
                 sections.append(f"### {field_name} by {author}:\n{rendered}")
         return system_prompt, "\n\n".join(sections + [instruction])
 
+    @staticmethod
+    def _coerce_action(value):
+        """Normalize a nested or flat Mind2Web action object."""
+
+        if isinstance(value, str):
+            parsed = repair_json(value, return_objects=True)
+            if isinstance(parsed, dict):
+                value = parsed.get("action", parsed)
+        if not isinstance(value, dict):
+            return None
+        if isinstance(value.get("action"), dict) and not {
+            "element",
+            "letter",
+            "choice",
+            "answer",
+            "option",
+            "operation",
+            "op",
+        }.intersection(str(key).lower() for key in value):
+            value = value["action"]
+        lowered = {str(key).lower(): item for key, item in value.items()}
+
+        def first(*keys, default=""):
+            for key in keys:
+                if lowered.get(key) is not None:
+                    return lowered[key]
+            return default
+
+        element = str(first("element", "letter", "choice", "answer", "option")).strip()
+        operation = str(first("operation", "op", "action")).strip().upper()
+        if not element or operation not in {"CLICK", "TYPE", "SELECT"}:
+            return None
+        return {
+            "element": element,
+            "operation": operation,
+            "value": str(first("value", "text", "input")).strip(),
+        }
+
+    def _normalize_response(self, response_json):
+        """Accept the common local-model flat-action response safely."""
+
+        normalized = dict(response_json)
+        action_fields = [
+            field for field in self.output_fields if "action" in field.lower()
+        ]
+        valid_action = False
+        for field in action_fields:
+            action = self._coerce_action(normalized.get(field))
+            if action is None:
+                action = self._coerce_action(normalized)
+            if action is not None:
+                normalized[field] = action
+                valid_action = True
+            else:
+                normalized.pop(field, None)
+
+        # A valid final action is useful even when the model omitted an optional
+        # analysis field. Reviewer fields such as feedback/correct remain strict.
+        if valid_action:
+            for field in self.output_fields:
+                if field not in action_fields:
+                    normalized.setdefault(field, "")
+        return normalized
+
     def query(self, input_infos: list, instruction, iteration_idx=-1):
         system_prompt, prompt = self.generate_prompt(input_infos, instruction)
-        response_json = {}
-        try:
-            response_json = get_json_response_from_gpt(
-                prompt, self.model, system_prompt, self.temperature
-            )
-            if any(field not in response_json for field in self.output_fields):
-                raise ValueError("LLM response omitted requested output fields.")
-        except Exception as exc:
-            if "maximum context length" in str(exc).lower() and SEARCHING_MODE:
-                raise AssertionError(
-                    "The agent architecture exceeded the model context window."
-                ) from exc
-            for field in self.output_fields:
-                response_json.setdefault(field, "")
-        return [
-            Info(field, self.__repr__(), response_json.get(field, ""), iteration_idx)
-            for field in self.output_fields
-        ]
+        last_error = None
+        for attempt in range(EXEC_FORMAT_ATTEMPTS):
+            attempt_prompt = prompt
+            if attempt:
+                attempt_prompt += (
+                    "\n\nYour previous response did not match the requested JSON "
+                    "schema. Return exactly one JSON object with top-level keys "
+                    f"{json.dumps(self.output_fields)}. If an action is requested, "
+                    "put element, operation, and value inside that action field."
+                )
+            try:
+                response_json = get_json_response_from_gpt(
+                    attempt_prompt, self.model, system_prompt, self.temperature
+                )
+                response_json = self._normalize_response(response_json)
+                missing = [
+                    field for field in self.output_fields if field not in response_json
+                ]
+                if missing:
+                    raise ValueError(
+                        "LLM response omitted requested output fields: "
+                        f"missing={missing}, received={sorted(response_json)}, "
+                        f"response_preview={str(response_json)[:300]!r}"
+                    )
+                return [
+                    Info(
+                        field,
+                        self.__repr__(),
+                        response_json.get(field, ""),
+                        iteration_idx,
+                    )
+                    for field in self.output_fields
+                ]
+            except Exception as exc:
+                if "maximum context length" in str(exc).lower() and SEARCHING_MODE:
+                    raise AssertionError(
+                        "The agent architecture exceeded the model context window."
+                    ) from exc
+                last_error = exc
+                logger.warning(
+                    "Mind2Web execution response invalid; attempt=%s/%s "
+                    "agent=%s requested_fields=%s error=%s",
+                    attempt + 1,
+                    EXEC_FORMAT_ATTEMPTS,
+                    self.agent_name,
+                    self.output_fields,
+                    exc,
+                )
+        raise ValueError(
+            f"{self.agent_name} failed to return the requested JSON fields after "
+            f"{EXEC_FORMAT_ATTEMPTS} attempts: {last_error}"
+        ) from last_error
 
     def __repr__(self):
         return f"{self.agent_name} {self.id}"
