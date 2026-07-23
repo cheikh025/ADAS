@@ -91,7 +91,6 @@ class Mind2WebAgentFormattingTests(unittest.TestCase):
         for name in ("Web Action Self-Consistency", "Web Action Debate"):
             responses = [
                 {
-                    "analysis": f"proposal {index}",
                     "action": {
                         "element": "A",
                         "operation": "CLICK",
@@ -113,6 +112,14 @@ class Mind2WebAgentFormattingTests(unittest.TestCase):
                 output = namespace["forward"](search_ours.AgentSystem(), self.task)
                 evaluation = evaluate_action(extract_agent_output(output), gold)
                 self.assertTrue(evaluation["step_success"])
+
+    def test_multi_agent_baselines_request_action_only(self):
+        entries = {item["name"]: item for item in get_init_archive()}
+        for name in ("Web Action Self-Consistency", "Web Action Debate"):
+            code = entries[name]["code"]
+            with self.subTest(agent=name):
+                self.assertNotIn("['analysis', 'action']", code)
+                self.assertIn("LLMAgentBase(['action']", code)
 
 
 if __name__ == "__main__":

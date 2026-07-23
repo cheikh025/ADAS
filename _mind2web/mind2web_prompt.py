@@ -44,10 +44,10 @@ INITIAL_ARCHIVE = [
         "Check the operation and exact value especially carefully.",
     ]
     for i, approach in enumerate(approaches):
-        policy = LLMAgentBase(['analysis', 'action'], 'Independent Web Policy', temperature=0.7)
+        policy = LLMAgentBase(['action'], 'Independent Web Policy', temperature=0.7)
         try:
-            analysis, action = policy([taskInfo], approach + " Think step by step and independently choose the best listed candidate for the current step. Return one CLICK, TYPE, or SELECT action with the correct value.", i)
-            candidates.extend([analysis, action])
+            action, = policy([taskInfo], approach + " Think through the choice internally, then return only one CLICK, TYPE, or SELECT action object with the correct candidate and value.", i)
+            candidates.append(action)
             valid_actions.append(action)
         except Exception:
             continue
@@ -60,9 +60,9 @@ INITIAL_ARCHIVE = [
         if count > fallback_count:
             fallback = candidate
             fallback_count = count
-    judge = LLMAgentBase(['analysis', 'action'], 'Web Action Verifier', temperature=0.1)
+    judge = LLMAgentBase(['action'], 'Web Action Verifier', temperature=0.1)
     try:
-        analysis, action = judge([taskInfo] + candidates, "Compare the proposed actions with the task, previous actions, and page context. Return a short analysis and one action object containing element, operation, and value.")
+        action, = judge([taskInfo] + candidates, "Compare the proposed actions with the task, previous actions, and page context. Return only one action object containing element, operation, and value.")
         return action
     except Exception:
         return fallback
@@ -91,18 +91,18 @@ INITIAL_ARCHIVE = [
     proposals = []
     valid_actions = []
     for i, role in enumerate(roles):
-        agent = LLMAgentBase(['analysis', 'action'], 'Web Debate Agent', role=role, temperature=0.5)
+        agent = LLMAgentBase(['action'], 'Web Debate Agent', role=role, temperature=0.5)
         try:
-            analysis, action = agent([taskInfo], "Think step by step and propose the best current action using one listed candidate. Return a short analysis and one action object containing element, operation, and value.", i)
-            proposals.extend([analysis, action])
+            action, = agent([taskInfo], "Think through the choice internally and propose the best current action using one listed candidate. Return only one action object containing element, operation, and value.", i)
+            proposals.append(action)
             valid_actions.append(action)
         except Exception:
             continue
     if not valid_actions:
         raise RuntimeError("No debate proposal returned a valid action.")
-    judge = LLMAgentBase(['analysis', 'action'], 'Lead Web Policy', temperature=0.1)
+    judge = LLMAgentBase(['action'], 'Lead Web Policy', temperature=0.1)
     try:
-        analysis, action = judge([taskInfo] + proposals, "Compare the proposals and resolve disagreements using the task, previous actions, and page context. Return a short analysis and one action object containing element, operation, and value.")
+        action, = judge([taskInfo] + proposals, "Compare the proposals and resolve disagreements using the task, previous actions, and page context. Return only one action object containing element, operation, and value.")
         return action
     except Exception:
         return valid_actions[0]
